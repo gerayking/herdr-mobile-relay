@@ -15,11 +15,34 @@ id() {
     fi
     command id "$@"
 }
+export HERDR_MOBILE_RELAY_ROOT_OPT_IN_FILE="$WORK_DIR/missing-root-opt-in"
 if require_user_service_context >/dev/null 2>&1; then
     echo "user service management unexpectedly accepted root" >&2
     exit 1
 fi
+HERDR_MOBILE_RELAY_ALLOW_ROOT=1 require_user_service_context >/dev/null
+unset HERDR_MOBILE_RELAY_ROOT_OPT_IN_FILE
+ROOT_OPT_IN_HOME="$WORK_DIR/root-opt-in-home"
+ROOT_OPT_IN_FILE="$ROOT_OPT_IN_HOME/.config/herdr-mobile-relay/allow-root"
+mkdir -p "$(dirname "$ROOT_OPT_IN_FILE")"
+printf '%s\n' 'HERDR_MOBILE_RELAY_ALLOW_ROOT=1' > "$ROOT_OPT_IN_FILE"
+chmod 644 "$ROOT_OPT_IN_FILE"
+if HOME="$ROOT_OPT_IN_HOME" require_user_service_context >/dev/null 2>&1; then
+    echo "user service management accepted a non-private root opt-in" >&2
+    exit 1
+fi
+chmod 600 "$ROOT_OPT_IN_FILE"
+HOME="$ROOT_OPT_IN_HOME" require_user_service_context >/dev/null
+printf '%s\n' 'not-an-opt-in' > "$ROOT_OPT_IN_FILE"
+if HOME="$ROOT_OPT_IN_HOME" require_user_service_context >/dev/null 2>&1; then
+    echo "user service management accepted invalid root opt-in content" >&2
+    exit 1
+fi
 unset -f id
+# The remaining integration fixtures install stub user services. Permit those
+# fixtures when this suite itself is run by root; non-root CI ignores the flag.
+export HERDR_MOBILE_RELAY_ALLOW_ROOT=1
+test "$(HERDR_RELAY_LABEL=root-geray-dev host_label)" = root-geray-dev
 
 DEV_RELAY_BIN="$WORK_DIR/dev/herdr-mobile-relay"
 mkdir -p "$(dirname "$DEV_RELAY_BIN")"

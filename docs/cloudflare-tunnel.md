@@ -52,6 +52,19 @@ already exists, the wizard displays its tunnel, hostname, and public DNS status
 before asking whether to reuse it. It does not adopt the config unattended;
 `HERDR_STABLE_REUSE_CONFIG=1` is the explicit opt-in for automation.
 
+Automation may set `HERDR_STABLE_TUNNEL_NAME` before the first run when two
+relay installations share a host. The name must begin with
+`herdr-mobile-relay-` and contain only letters, numbers, underscores, and
+hyphens. Once setup records a tunnel, a different requested name is refused.
+
+Running the user service as root remains disabled by default. A deliberate
+root-only installation may set `HERDR_MOBILE_RELAY_ALLOW_ROOT=1`, or create
+`~/.config/herdr-mobile-relay/allow-root` as a root-owned `0600` file containing
+exactly `HERDR_MOBILE_RELAY_ALLOW_ROOT=1`. This grants the relay full root and
+root-Herdr access, so a regular user service is safer whenever it is sufficient.
+Set `HERDR_RELAY_LABEL` in that relay's environment file when multiple relay
+instances on one host need distinct names in the phone app.
+
 ## Useful actions
 
 ```bash

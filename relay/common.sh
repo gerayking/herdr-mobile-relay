@@ -418,8 +418,24 @@ require_user_service_context() {
         return
     fi
 
+    local opt_in_file
+    case "${HERDR_MOBILE_RELAY_ALLOW_ROOT:-}" in
+        1|true)
+            echo "Warning: managing the Herdr Mobile Relay user service as root by explicit opt-in." >&2
+            return
+            ;;
+    esac
+    opt_in_file="${HERDR_MOBILE_RELAY_ROOT_OPT_IN_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/herdr-mobile-relay/allow-root}"
+    if private_owned_file "$opt_in_file" &&
+       [ "$(cat "$opt_in_file")" = "HERDR_MOBILE_RELAY_ALLOW_ROOT=1" ]; then
+        echo "Warning: managing the Herdr Mobile Relay user service as root by explicit opt-in." >&2
+        return
+    fi
+
     echo "Refusing to manage the Herdr Mobile Relay user service as root." >&2
     echo "Run the command again as the signed-in macOS or Linux user, without sudo." >&2
+    echo "To opt in deliberately, set HERDR_MOBILE_RELAY_ALLOW_ROOT=1 or create" >&2
+    echo "a private allow-root file containing HERDR_MOBILE_RELAY_ALLOW_ROOT=1." >&2
     return 1
 }
 
@@ -1015,6 +1031,10 @@ verify_public_readiness() {
 }
 
 host_label() {
+    case "${HERDR_RELAY_LABEL:-}" in
+        ""|*$'\n'*|*$'\r'*) ;;
+        *) printf '%s\n' "$HERDR_RELAY_LABEL"; return ;;
+    esac
     hostname -s 2>/dev/null || hostname 2>/dev/null || echo relay
 }
 

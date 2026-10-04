@@ -268,12 +268,14 @@ new_case() {
     export HERDR_STABLE_POLL_DELAY=0
     export HERDR_STABLE_YES=1
     export HERDR_SETUP_YES=1
+    export HERDR_MOBILE_RELAY_ALLOW_ROOT=1
     export STUB_TUNNEL_UUID="$TUNNEL_UUID"
     export STUB_LOGIN_MARKER="$CASE_DIR/login-complete"
     export STUB_ROUTE_MARKER="$CASE_DIR/dns-routed"
     export STUB_CREATED_TUNNEL_MARKER="$CASE_DIR/created-tunnel.json"
     unset CLOUDFLARED_CONFIG DISPLAY WAYLAND_DISPLAY HERDR_PHONE_APP_URL
     unset HERDR_APP_DEPLOY_ORIGIN HERDR_STABLE_REUSE_CONFIG HERDR_STABLE_RELOGIN
+    unset HERDR_STABLE_TUNNEL_NAME
     unset STUB_APP_ORIGIN STUB_CREATE_FAIL STUB_DELETE_FAIL STUB_DNS_MODE
     unset STUB_HTTP_MODE STUB_READY_MODE STUB_INGRESS_FAIL
     unset STUB_LIST_JSON STUB_LOGIN_REQUIRED STUB_ROUTE_FAIL STUB_ROUTE_NAME
@@ -402,6 +404,25 @@ test_creation_confirmation() {
     assert_contains "$STUB_LOG" ' tunnel create '
     assert_contains "$STUB_LOG" ' route dns '
     pass "new Cloudflare resources require confirmation or the explicit unattended opt-in"
+}
+
+test_custom_tunnel_name() {
+    new_case
+    export HERDR_STABLE_TUNNEL_NAME=herdr-mobile-relay-root-workstation
+    run_setup
+    [ "$STATUS" -eq 0 ] || { sed -n '1,240p' "$OUTPUT" >&2; fail "custom stable tunnel name"; }
+    assert_contains "$STUB_LOG" 'tunnel create --output json --credentials-file'
+    assert_contains "$STUB_LOG" 'herdr-mobile-relay-root-workstation'
+    [ "$("$TEST_RELAY_BIN" stable-state get "$HERDR_STABLE_STATE_FILE" tunnel_name)" = herdr-mobile-relay-root-workstation ] ||
+        fail "custom tunnel name was not recorded"
+
+    new_case
+    export HERDR_STABLE_TUNNEL_NAME=unrelated-tunnel
+    run_setup
+    [ "$STATUS" -ne 0 ] || fail "foreign custom tunnel name should fail"
+    assert_contains "$OUTPUT" 'must use the herdr-mobile-relay-* namespace'
+    assert_not_contains "$STUB_LOG" ' tunnel create '
+    pass "custom tunnel names stay explicit and inside the managed namespace"
 }
 
 test_existing_config_reuse() {
@@ -748,12 +769,13 @@ test_teardown_recovers_uuid_config_by_tunnel_name() {
 }
 
 
-echo "1..17"
+echo "1..18"
 test_success_and_alternate_port
 test_existing_phone_app_origin
 test_deployed_phone_app_origin
 test_discovered_phone_app_origin
 test_creation_confirmation
+test_custom_tunnel_name
 test_existing_config_reuse
 test_cloudflare_zone_selection_and_route_verification
 test_login_guidance

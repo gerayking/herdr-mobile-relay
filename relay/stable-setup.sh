@@ -669,6 +669,31 @@ else
     CONFIG="$(state_get config_path)"
     CREATED_DNS="$(state_get created_dns)"
 
+    if [ -n "${HERDR_STABLE_TUNNEL_NAME:-}" ]; then
+        case "$HERDR_STABLE_TUNNEL_NAME" in
+            herdr-mobile-relay-*) ;;
+            *)
+                echo "✗ HERDR_STABLE_TUNNEL_NAME must use the herdr-mobile-relay-* namespace." >&2
+                fail_resumable
+                exit 1
+                ;;
+        esac
+        case "${HERDR_STABLE_TUNNEL_NAME#herdr-mobile-relay-}" in
+            ""|*[!a-zA-Z0-9_-]*)
+                echo "✗ HERDR_STABLE_TUNNEL_NAME may contain only letters, numbers, underscores, and hyphens." >&2
+                fail_resumable
+                exit 1
+                ;;
+        esac
+        if [ -n "$TUNNEL_NAME" ] && [ "$TUNNEL_NAME" != "$HERDR_STABLE_TUNNEL_NAME" ]; then
+            echo "✗ The recorded tunnel name is $TUNNEL_NAME, not $HERDR_STABLE_TUNNEL_NAME." >&2
+            echo "  Stable setup will not rename or replace a recorded tunnel." >&2
+            fail_resumable
+            exit 1
+        fi
+        TUNNEL_NAME="$HERDR_STABLE_TUNNEL_NAME"
+    fi
+
     if [ -z "$TUNNEL_NAME" ]; then
         COMPUTER_LABEL="$(host_label | tr '[:upper:]_' '[:lower:]-' | tr -cd 'a-z0-9-')"
         TUNNEL_NAME="herdr-mobile-relay-${COMPUTER_LABEL:-relay}"
