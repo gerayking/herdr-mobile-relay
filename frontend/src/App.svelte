@@ -3,7 +3,7 @@
   import { get } from 'svelte/store';
   import ActivityDetail from '$components/ActivityDetail.svelte';
   import ActivityView from '$components/ActivityView.svelte';
-  import AgentList from '$components/AgentList.svelte';
+  import RelayAgentList from '$components/RelayAgentList.svelte';
   import AgentRail from '$components/AgentRail.svelte';
   import LaunchView from '$components/LaunchView.svelte';
   import GlobalJump from '$components/GlobalJump.svelte';
@@ -78,6 +78,15 @@
   let jumpOpen = $state(false);
   let workspaceOpen = $state(false);
   let workspaceDisclosure = $state<Record<string, boolean>>({});
+  let relayDisclosure = $state<Record<string, boolean>>(readRelayDisclosure());
+
+  function readRelayDisclosure(): Record<string, boolean> {
+    try {
+      const saved: unknown = JSON.parse(localStorage.getItem('herdr_relay_disclosure') || '{}');
+      if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return {};
+      return Object.fromEntries(Object.entries(saved).filter(([, value]) => typeof value === 'boolean'));
+    } catch { return {}; }
+  }
   let lastBlocked = new Set<string>();
   let previousView = '';
   let terminalUnavailable = $state(false);
@@ -747,7 +756,7 @@
       <p role="status">Unlocking and validating the exact notification target…</p>
     </main>
   {:else}
-    <AgentList bind:workspaceDisclosure agents={$agents} workspaces={$workspaces} relays={$relays} connections={$connections} responding={$responding} onopen={openAgent} />
+    <RelayAgentList bind:relayDisclosure bind:workspaceDisclosure agents={$agents} workspaces={$workspaces} relays={$relays} connections={$connections} responding={$responding} onopen={openAgent} />
   {/if}
 </div>
 

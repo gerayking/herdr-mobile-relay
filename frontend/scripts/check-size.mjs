@@ -79,7 +79,8 @@ import { constants, gzipSync } from 'node:zlib';
 // engine remains in the lazy Conversation History chunk.
 // Raised from 170 KiB for bounded startup metadata and persistent cache controls.
 // Raised from 171 KiB for terminal snapshots and exact-target cache restoration.
-const limitKiB = 172;
+// Raised from 172 KiB for relay grouping, status summaries, and saved folds.
+const limitKiB = 173;
 const limit = limitKiB * 1024 + 256;
 const root = resolve(process.argv[2] || 'dist');
 const assetNames = await readdir(join(root, 'assets'));

@@ -643,7 +643,7 @@
   </div>
 {/snippet}
 
-<main class="agent-list" aria-label="Agents">
+<div class="relay-agents">
   {#each unavailableRelays as relay (relay.id)}
     {@const inventory = connections.get(relay.id)?.inventory}
     <section class="inventory-warning" role="status" aria-label={`${relay.label} agent inventory unavailable`}>
@@ -685,8 +685,8 @@
   {#each statusDefinitions as [group, title, tone] (group)}
     {@const visible = sortedAgents(agents.filter((agent) => agentStatusGroup(agent) === group))}
     {#if visible.length}
-      <section class="agent-section" aria-labelledby={`section-${group}`}>
-        <h2 id={`section-${group}`} class="section-heading">
+      <section class="agent-section" aria-label={title}>
+        <h2 class="section-heading">
           <span class={`status-dot status-${tone}`}></span>{title}
           <span class="section-count" aria-hidden="true">{visible.length}</span>
         </h2>
@@ -696,8 +696,8 @@
   {/each}
 
   {#if doneWorkspaces.length}
-    <section class="agent-section done-section" aria-labelledby="section-done">
-      <h2 id="section-done" class="section-heading">
+    <section class="agent-section done-section" aria-label="Done">
+      <h2 class="section-heading">
         <span class="status-dot status-success"></span>Done
         <span class="section-count" aria-hidden="true">{doneAgents.length}</span>
       </h2>
@@ -706,8 +706,8 @@
   {/if}
 
   {#if workingWorkspaces.length}
-    <section class="agent-section working-section" aria-labelledby="section-working">
-      <h2 id="section-working" class="section-heading">
+    <section class="agent-section working-section" aria-label="Working">
+      <h2 class="section-heading">
         <span class="status-dot status-warning"></span>Working
         <span class="section-count" aria-hidden="true">{workingAgents.length}</span>
       </h2>
@@ -716,8 +716,8 @@
   {/if}
 
   {#if idleWorkspaces.length}
-    <section class="agent-section workspace-section" aria-labelledby="workspace-section-title">
-      <h2 id="workspace-section-title" class="section-heading">
+    <section class="agent-section workspace-section" aria-label="Idle">
+      <h2 class="section-heading">
         <span class="status-dot status-ready"></span>Idle
         <span class="section-count" aria-hidden="true">{idleWorkspaces.length}</span>
       </h2>
@@ -731,4 +731,4 @@
       {@render workspaceGrid(mixedWorkspaces, mixedWorkspaces.length === 1, 'mixed')}
     </section>
   {/if}
-</main>
+</div>

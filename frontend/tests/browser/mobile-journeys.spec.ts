@@ -538,6 +538,72 @@ async function handshake(page: Page, index: number, overrides: Record<string, un
 
 const fedora = { id: 'fedora', label: 'Fedora', url: 'wss://fedora.example', token: '' };
 
+test('groups agents by relay and remembers independent folds across navigation and reload', async ({ page }) => {
+  const other = { id: 'mac', label: 'Mac Studio', url: 'wss://mac.example', token: '' };
+  await boot(page, [fedora, other]);
+  await expect.poll(() => socketCount(page)).toBe(2);
+  const publishAgents = async () => {
+    for (const index of [0, 1]) {
+      await handshake(page, index);
+      await server(page, index, {
+        type: 'agents', agents: [{
+          pane_id: 'w1:p1', workspace_id: 'same-workspace', status: 'working',
+          project: index ? 'Mac task' : 'Linux task', agent: 'codex',
+        }],
+      });
+    }
+  };
+  await publishAgents();
+  const first = page.locator('.relay-group[data-relay-id="fedora"]');
+  const second = page.locator('.relay-group[data-relay-id="mac"]');
+  await expect(first).toHaveAttribute('open', '');
+  await expect(second).not.toHaveAttribute('open');
+  await expect(first.getByRole('button', { name: 'Open Linux task on Fedora' })).toBeVisible();
+  await expect(second.getByRole('button', { name: 'Open Mac task on Mac Studio' })).toBeHidden();
+  await expect(first.getByRole('button', { name: /Open Mac task/ })).toHaveCount(0);
+  await second.locator(':scope > summary').click();
+  await first.locator(':scope > summary').click();
+  await second.getByRole('button', { name: 'Open Mac task on Mac Studio' }).click();
+  await expect(page.getByRole('combobox', { name: 'Prompt' })).toBeVisible();
+  await page.getByRole('button', { name: 'Back' }).click();
+  await expect(first).not.toHaveAttribute('open');
+  await expect(second).toHaveAttribute('open', '');
+  await page.reload();
+  await expect.poll(() => socketCount(page)).toBe(2);
+  await publishAgents();
+  await expect(first).not.toHaveAttribute('open');
+  await expect(second).toHaveAttribute('open', '');
+  await expect(second.getByRole('button', { name: 'Open Mac task on Mac Studio' })).toBeVisible();
+});
+
+test('keeps folded relay attention and connection state visible with long names', async ({ page }, testInfo) => {
+  const other = { id: 'long', label: 'GPU-Development-Workstation-For-Long-Running-Experiments', url: 'wss://long.example', token: '' };
+  await boot(page, [fedora, other]);
+  await expect.poll(() => socketCount(page)).toBe(2);
+  await handshake(page, 0);
+  await handshake(page, 1);
+  await server(page, 1, { type: 'agents', agents: [{
+    pane_id: 'w1:p1', status: 'blocked', project: 'Approval task', agent: 'codex',
+    approval_options: ['Yes', 'No'],
+  }] });
+  const second = page.locator('.relay-group[data-relay-id="long"]');
+  await expect(second).not.toHaveAttribute('open');
+  await expect(second.locator(':scope > summary')).toContainText('1 pending');
+  await expect(second.locator(':scope > summary')).toContainText('Connected');
+  await expect(second.locator(':scope > summary')).toContainText('1 agent');
+  for (const viewport of [{ width: 320, height: 740 }, { width: 1280, height: 900 }]) {
+    await page.setViewportSize(viewport);
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath(`relay-groups-${viewport.width}.png`), fullPage: true });
+  }
+  await second.locator(':scope > summary').focus();
+  await page.keyboard.press('Enter');
+  await expect(second).toHaveAttribute('open', '');
+  await expect(second.getByRole('button', { name: /Open Approval task/ })).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: testInfo.outputPath('relay-groups-expanded.png'), fullPage: true });
+});
+
 test('guides an unpairable relay without ever dialing it', async ({ page }) => {
   // A relay key that is not a usable relay key, with no enrolled credential:
   // nothing can be presented, so the app must not spend a dial finding out.
@@ -1061,6 +1127,7 @@ test('imports quick setup and merges agents from multiple relays', async ({ page
   const trailingInset = headerBox!.x + headerBox!.width - settingsBox!.x - settingsBox!.width / 2;
   expect(Math.abs(leadingInset - trailingInset)).toBeLessThan(2);
   await expect(page.getByRole('button', { name: 'Open Fedora app on Fedora Workstation' })).toBeVisible();
+  await page.locator('.relay-group > summary', { hasText: 'Mac' }).click();
   await expect(page.getByRole('button', { name: 'Open Mac app on Mac' })).toBeVisible();
 });
 

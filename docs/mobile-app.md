@@ -124,6 +124,11 @@ this link from another app takes you to that agent.
 
 ## Workspace navigation and inspection
 
+The home screen groups agents by relay. Tap a computer's heading to expand or
+collapse its agents; connection state, agent counts, and pending attention stay
+visible when collapsed. The first relay starts expanded and the others start
+collapsed. Each relay's expansion state is saved across navigation and reloads.
+
 The home screen keeps agents that need input visible at the top. By default,
 each workspace below them appears once — mixed — with a dot for its most
 notable session: done, then working, then idle. The **Home Workspaces**

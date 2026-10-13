@@ -1,6 +1,6 @@
 # Geray custom distribution
 
-Version **0.22.6001** preserves the local mobile-control changes based on
+Version **0.22.6002** preserves the local mobile-control changes based on
 upstream 0.22.6. The fork uses the 0.22.6000 patch series so its releases can
 use the existing strict MAJOR.MINOR.PATCH installer without reusing upstream
 release tags. Release downloads and the phone-driven relay updater point to
@@ -8,6 +8,8 @@ release tags. Release downloads and the phone-driven relay updater point to
 
 ## Included changes
 
+- Relay-first home navigation with independent collapsible machine groups,
+  connection and pending-agent summaries, and saved expansion state.
 - Explicit opt-in for root-owned relay services and distinct relay labels.
 - Codex conversation lookup in archived sessions, with active sessions preferred
   and escaping symlinks rejected.
@@ -23,7 +25,7 @@ release tags. Release downloads and the phone-driven relay updater point to
 Install Herdr for the user whose agents you want to control. Then run:
 
 ```sh
-herdr plugin install gerayking/herdr-mobile-relay --ref v0.22.6001 --yes
+herdr plugin install gerayking/herdr-mobile-relay --ref v0.22.6002 --yes
 ```
 
 The plugin downloads the complete release for Linux or macOS on amd64 or arm64,
@@ -53,7 +55,7 @@ require enabling them.
 
 ## Verify and update
 
-The local and public `/healthz` endpoints should report version `0.22.6001`,
+The local and public `/healthz` endpoints should report version `0.22.6002`,
 the release tag's commit in `revision`, and ready inventory once Herdr is
 reachable. A separately hosted phone app reports its own build identity and is
 updated only by its deployment owner.
