@@ -2252,7 +2252,35 @@ test('resets drafts and terminal output when moving to another agent', async ({ 
   await expect(page.getByRole('log')).not.toContainText('private output from agent A');
 });
 
-test('replaces a half-open socket immediately when a sleeping phone resumes', async ({ page }) => {
+test('reuses a healthy WebSocket when a phone returns after a long sleep', async ({ page }) => {
+  await boot(page, [fedora]);
+  await expect.poll(() => socketCount(page)).toBe(1);
+  await handshake(page, 0);
+  await server(page, 0, {
+    type: 'agents',
+    agents: [{ pane_id: 'w1:p1', status: 'working', project: 'Keep session', agent: 'codex' }],
+  });
+  const agent = page.getByRole('button', { name: 'Open Keep session on Fedora' });
+  await expect(agent).toBeVisible();
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await page.clock.setFixedTime(new Date(Date.now() + 10 * 60_000));
+  const before = (await commands(page)).filter(command => command.type === 'refresh_agents').length;
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await expect.poll(async () =>
+    (await commands(page)).filter(command => command.type === 'refresh_agents').length).toBe(before + 1);
+  await server(page, 0, { type: 'inventory_status', state: 'ready' });
+  await page.waitForTimeout(2_100);
+  expect(await socketCount(page)).toBe(1);
+  await expect(agent).toBeEnabled();
+});
+
+test('replaces a half-open socket when a sleeping phone resumes', async ({ page }) => {
   await boot(page, [fedora]);
   await expect.poll(() => socketCount(page)).toBe(1);
   await handshake(page, 0, {
@@ -4562,6 +4590,482 @@ test('shows tool-only agent turns only in full history and decodes their argumen
   await expect(panels.nth(1)).toContainText('line-199');
   await card.getByRole('button', { name: 'Show less' }).click();
   await expect(panels.nth(1)).not.toContainText('line-199');
+});
+
+async function openCachedConversation(page: Page, autoReply = true, session = 'cached-session') {
+  await expect.poll(() => socketCount(page)).toBe(1);
+  await setAutoCommands(page, autoReply);
+  await handshake(page, 0, { capabilities: ['conversation_history'] });
+  await server(page, 0, {
+    type: 'agents',
+    agents: [{
+      pane_id: 'w1:p1', status: 'idle', project: 'Cached conversation', agent: 'codex',
+      conversation_history_available: true, agent_session_id: session, terminal_id: 'cached-terminal',
+    }],
+  });
+  if (autoReply) await setConversationFixture(page, {
+    entries: [
+      { id: 'cached-q', timestamp: '2026-10-07T00:00:00Z', role: 'user', text: 'Saved question' },
+      { id: 'cached-a', timestamp: '2026-10-07T00:00:01Z', role: 'assistant', text: 'Saved answer with $x^2$.' },
+    ], total: 2,
+  });
+  await page.evaluate(() => { location.hash = '#history=fedora%3A%3Aw1%3Ap1'; });
+  await expect(page.getByRole('heading', { name: 'Conversation', exact: true })).toBeVisible();
+  await expect.poll(async () => (await commands(page)).some((command) => command.type === 'get_conversation_history')).toBe(true);
+}
+
+async function savedConversationCount(page: Page): Promise<number> {
+  return page.evaluate(() => new Promise<number>((resolve, reject) => {
+    const request = indexedDB.open('herdr-conversation-cache', 1);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      const tx = db.transaction('previews', 'readonly');
+      const count = tx.objectStore('previews').count();
+      tx.oncomplete = () => { db.close(); resolve(count.result); };
+      tx.onabort = () => { db.close(); reject(tx.error); };
+    };
+  }));
+}
+
+async function openCachedTerminal(page: Page, session = 'terminal-session', autoReply = true) {
+  await expect.poll(() => socketCount(page)).toBe(1);
+  await setAutoCommands(page, autoReply);
+  await handshake(page, 0, { capabilities: ['pane_size_lease', 'pane_realtime_delta'] });
+  await server(page, 0, {
+    type: 'agents', agents: [{
+      pane_id: 'w1:p1', status: 'working', project: 'Cached terminal', agent: 'codex',
+      terminal_id: 'terminal-cache', agent_session_id: session,
+    }],
+  });
+  await page.getByRole('button', { name: 'Open Cached terminal on Fedora' }).click();
+  await expect(page.getByRole('main', { name: 'Terminal for Cached terminal' })).toBeVisible();
+}
+
+async function sendCachedTerminalFrame(page: Page, content = 'Saved terminal output') {
+  await server(page, 0, {
+    type: 'pane_content', pane_id: 'w1:p1', format: 'ansi',
+    content: `\u001b[32m${content}\u001b[0m`, content_fingerprint: content,
+  });
+  await expect(page.getByRole('log')).toContainText(content);
+}
+
+test('terminal cache opens before handshake and stays painted through resize and live refresh', async ({ page }, testInfo) => {
+  await boot(page, [fedora]);
+  await openCachedTerminal(page);
+  const content = `Saved terminal output ${'with a long wrapped output line '.repeat(12)}`;
+  await sendCachedTerminalFrame(page, content);
+  const terminal = page.getByRole('log');
+  const typography = () => terminal.evaluate(element => {
+    const row = element.querySelector('.ansi-line')!;
+    const text = document.createTreeWalker(row, NodeFilter.SHOW_TEXT).nextNode()!;
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.setEnd(text, 1);
+    const glyph = range.getBoundingClientRect();
+    const probe = element.querySelector('[aria-hidden="true"]')!;
+    const style = getComputedStyle(text.parentElement!);
+    return {
+      font: style.fontSize,
+      line: style.lineHeight,
+      adjustment: style.getPropertyValue('-webkit-text-size-adjust') || style.getPropertyValue('text-size-adjust'),
+      supportsAdjustment: CSS.supports('-webkit-text-size-adjust', '100%') || CSS.supports('text-size-adjust', '100%'),
+      glyphWidth: glyph.width,
+      glyphHeight: glyph.height,
+      cellWidth: probe.getBoundingClientRect().width / probe.textContent!.length,
+    };
+  });
+  const liveTypography = await typography();
+  if (liveTypography.supportsAdjustment) expect(liveTypography.adjustment).toBe('100%');
+  await expect.poll(() => savedConversationCount(page)).toBe(1);
+  await page.reload();
+  await expect(terminal).toContainText('Saved terminal output');
+  expect(await typography()).toEqual(liveTypography);
+  await expect(terminal).not.toContainText('Resizing terminal');
+  await expect(terminal).not.toContainText('Loading');
+  await expect(page.getByRole('combobox', { name: 'Prompt' })).toBeDisabled();
+  expect((await commands(page)).filter(command => ['read_pane', 'watch_pane', 'lease_pane_size'].includes(String(command.type)))).toHaveLength(0);
+  for (const width of [390, 1280]) {
+    await page.setViewportSize({ width, height: 844 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    expect(await typography()).toEqual(liveTypography);
+    await page.screenshot({ path: testInfo.outputPath(`terminal-cache-before-connection-${width}.png`) });
+  }
+  await setAutoCommands(page, false);
+  await handshake(page, 0, { capabilities: ['pane_size_lease', 'pane_realtime_delta'] });
+  await expect(page.getByRole('combobox', { name: 'Prompt' })).toBeDisabled();
+  expect((await commands(page)).filter(command => command.type === 'lease_pane_size')).toHaveLength(0);
+  await server(page, 0, {
+    type: 'agents', agents: [{
+      pane_id: 'w1:p1', status: 'working', project: 'Cached terminal', agent: 'codex',
+      terminal_id: 'terminal-cache', agent_session_id: 'terminal-session',
+    }],
+  });
+  await expect.poll(async () => (await commands(page)).some(command => command.type === 'lease_pane_size')).toBe(true);
+  await expect(terminal).toContainText('Saved terminal output');
+  expect(await typography()).toEqual(liveTypography);
+  await expect(terminal).not.toContainText('Resizing terminal');
+  const lease = (await commands(page)).find(command => command.type === 'lease_pane_size')!;
+  await server(page, 0, {
+    type: 'command_result', request_id: lease.request_id, action: 'lease_pane_size', ok: true,
+    data: { columns: lease.columns },
+  });
+  await server(page, 0, {
+    type: 'pane_content', pane_id: 'w1:p1', format: 'plain', content: 'Transient resize output', resize_settling: true,
+  });
+  await expect(terminal).toContainText('Saved terminal output');
+  await expect(terminal).not.toContainText('Transient resize output');
+  await sendCachedTerminalFrame(page, 'Latest terminal output');
+  await expect(terminal).toHaveClass(/resize-layout/);
+  expect(await typography()).toEqual(liveTypography);
+  await expect(terminal).not.toContainText('Saved terminal output');
+  await page.waitForTimeout(100);
+  await page.reload();
+  await expect(page.getByRole('log')).toContainText('Latest terminal output');
+});
+
+test('terminal cache uses the shared switch and stays disabled across reloads', async ({ page }) => {
+  await boot(page, [fedora]);
+  await openCachedTerminal(page);
+  await sendCachedTerminalFrame(page);
+  await expect.poll(() => savedConversationCount(page)).toBe(1);
+  await page.evaluate(() => { location.hash = '#settings'; });
+  const toggle = page.getByRole('switch', { name: 'Save Conversations and Terminals on This Device' });
+  await toggle.uncheck();
+  await expect.poll(() => savedConversationCount(page)).toBe(0);
+  await page.goto('/');
+  await openCachedTerminal(page);
+  await expect(page.getByRole('log')).not.toContainText('Saved terminal output');
+  await sendCachedTerminalFrame(page, 'Uncached live output');
+  expect(await savedConversationCount(page)).toBe(0);
+  await page.evaluate(() => { location.hash = '#settings'; });
+  await expect(toggle).not.toBeChecked();
+  await toggle.check();
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await page.getByRole('button', { name: 'Open Cached terminal on Fedora' }).click();
+  await expect.poll(() => savedConversationCount(page)).toBe(1);
+});
+
+test('terminal cache rejects a replaced session and expires saved frames', async ({ page }) => {
+  await boot(page, [fedora]);
+  await openCachedTerminal(page);
+  await sendCachedTerminalFrame(page);
+  await expect.poll(() => savedConversationCount(page)).toBe(1);
+  await page.reload();
+  await expect(page.getByRole('log')).toContainText('Saved terminal output');
+  await handshake(page, 0, { capabilities: ['pane_size_lease'] });
+  await server(page, 0, {
+    type: 'agents', agents: [{
+      pane_id: 'w1:p1', status: 'working', project: 'Replaced terminal', agent: 'codex',
+      terminal_id: 'terminal-cache', agent_session_id: 'different-session',
+    }],
+  });
+  await expect(page.getByText('Saved terminal output', { exact: false })).toHaveCount(0);
+  await expect(page.getByRole('log')).toHaveCount(0);
+  await page.goto('/');
+  await openCachedTerminal(page, 'different-session');
+  await expect(page.getByRole('log')).not.toContainText('Saved terminal output');
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    const request = indexedDB.open('herdr-conversation-cache', 1);
+    request.onsuccess = () => {
+      const db = request.result;
+      const tx = db.transaction('metadata', 'readwrite');
+      const store = tx.objectStore('metadata');
+      const rows = store.getAll();
+      rows.onsuccess = () => { for (const row of rows.result) store.put({ ...row, savedAt: 1 }); };
+      tx.oncomplete = () => { db.close(); resolve(); };
+    };
+  }));
+  await page.goto('/');
+  await openCachedTerminal(page);
+  await expect.poll(() => savedConversationCount(page)).toBe(0);
+  await expect(page.getByRole('log')).not.toContainText('Saved terminal output');
+});
+
+test('terminal cache clears on relay removal and pending frames cannot restore it', async ({ page }) => {
+  await boot(page, [fedora]);
+  await openCachedTerminal(page);
+  await sendCachedTerminalFrame(page);
+  await expect.poll(() => savedConversationCount(page)).toBe(1);
+  await sendCachedTerminalFrame(page, 'Queued newer output');
+  await page.evaluate(() => { location.hash = '#settings'; });
+  await page.getByRole('button', { name: 'Remove Fedora', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Remove Fedora?' }).getByRole('button', { name: 'Remove Relay', exact: true }).click();
+  await expect.poll(() => savedConversationCount(page)).toBe(0);
+  await page.waitForTimeout(2_100);
+  expect(await savedConversationCount(page)).toBe(0);
+});
+
+test('terminal cache falls back to live frames when browser storage is unavailable', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, 'indexedDB', { configurable: true, get() { throw new Error('Storage denied'); } });
+  });
+  await boot(page, [fedora]);
+  await openCachedTerminal(page);
+  await sendCachedTerminalFrame(page);
+  await page.evaluate(() => { location.hash = '#settings'; });
+  await expect(page.getByRole('status').filter({ hasText: 'Local conversation and terminal storage is unavailable' })).toBeVisible();
+});
+
+test('terminal cache cannot overwrite live output when local storage opens late', async ({ page }) => {
+  await boot(page, [fedora]);
+  await openCachedTerminal(page);
+  await sendCachedTerminalFrame(page);
+  await expect.poll(() => savedConversationCount(page)).toBe(1);
+  await page.addInitScript(() => {
+    const open = indexedDB.open.bind(indexedDB);
+    indexedDB.open = (name, version) => {
+      const request = open(name, version);
+      return new Proxy(request, {
+        get(target, key) {
+          const value = Reflect.get(target, key, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+        set(target, key, value) {
+          if (key === 'onsuccess') {
+            target.onsuccess = event => setTimeout(() => value.call(target, event), 800);
+            return true;
+          }
+          return Reflect.set(target, key, value, target);
+        },
+      });
+    };
+  });
+  await page.goto('/');
+  await openCachedTerminal(page);
+  await sendCachedTerminalFrame(page, 'Authoritative live output');
+  await page.waitForTimeout(1000);
+  await expect(page.getByRole('log')).toContainText('Authoritative live output');
+  await expect(page.getByRole('log')).not.toContainText('Saved terminal output');
+});
+
+test('conversation cache opens from the startup list before relay handshake and checks the live target before sending', async ({ page }, testInfo) => {
+  await boot(page, [fedora]);
+  await openCachedConversation(page);
+  await expect.poll(() => savedConversationCount(page)).toBe(1);
+  await page.goto('/');
+  // There is deliberately no handshake or agents frame after this reload.
+  await expect(page.getByRole('button', { name: 'Open Cached conversation on Fedora' })).toBeVisible();
+  await page.getByRole('button', { name: /^Settings/ }).click();
+  await page.getByRole('group', { name: 'Default View' }).getByRole('button', { name: 'Conversation' }).click();
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await page.getByRole('button', { name: 'Open Cached conversation on Fedora' }).click();
+  await expect(page.getByText('Saved answer with', { exact: false })).toBeVisible();
+  await expect(page.getByRole('textbox', { name: 'Prompt', exact: true })).toBeDisabled();
+  expect((await commands(page)).filter(command => command.type === 'get_conversation_history')).toHaveLength(0);
+  await page.screenshot({ path: testInfo.outputPath('cached-before-connection.png') });
+  await setAutoCommands(page, false);
+  await handshake(page, 0, { capabilities: ['conversation_history'] });
+  await expect(page.getByRole('textbox', { name: 'Prompt', exact: true })).toBeDisabled();
+  expect((await commands(page)).filter(command => command.type === 'get_conversation_history')).toHaveLength(0);
+  await server(page, 0, {
+    type: 'agents', agents: [{
+      pane_id: 'w1:p1', status: 'idle', project: 'Cached conversation', agent: 'codex',
+      conversation_history_available: true, agent_session_id: 'cached-session', terminal_id: 'cached-terminal',
+    }],
+  });
+  await expect(page.getByRole('textbox', { name: 'Prompt', exact: true })).toBeEnabled();
+  await expect.poll(async () => (await commands(page)).filter(command => command.type === 'get_conversation_history').length).toBe(1);
+  await expect(page.getByText('Saved answer with', { exact: false })).toBeVisible();
+});
+
+test('conversation cache discards a startup route when the terminal session has changed', async ({ page }) => {
+  await boot(page, [fedora]);
+  await openCachedConversation(page);
+  await expect.poll(() => savedConversationCount(page)).toBe(1);
+  await page.getByRole('button', { name: 'Terminal view', exact: true }).click();
+  await page.getByRole('button', { name: 'Conversation history', exact: true }).click();
+  await page.reload();
+  await expect(page.getByText('Saved answer with', { exact: false })).toBeVisible();
+  await setAutoCommands(page, false);
+  await handshake(page, 0, { capabilities: ['conversation_history'] });
+  await server(page, 0, {
+    type: 'agents', agents: [{
+      pane_id: 'w1:p1', status: 'idle', project: 'New session', agent: 'codex',
+      conversation_history_available: true, agent_session_id: 'new-session', terminal_id: 'new-terminal',
+    }],
+  });
+  await expect(page.getByText('Saved answer with', { exact: false })).toHaveCount(0);
+  await expect(page.getByRole('main', { name: 'Conversation history unavailable' })).toBeVisible();
+  expect((await commands(page)).filter(command => command.type === 'get_conversation_history')).toHaveLength(0);
+});
+
+test('conversation cache survives reload, refreshes in background, and can be disabled and reenabled', async ({ page }, testInfo) => {
+  await boot(page, [fedora]);
+  await openCachedConversation(page);
+  await expect(page.getByText('Saved answer with', { exact: false })).toBeVisible();
+  await expect.poll(() => savedConversationCount(page)).toBe(1);
+
+  await page.goto('/');
+  await openCachedConversation(page, false);
+  await expect(page.getByText('Saved answer with', { exact: false })).toBeVisible();
+  await expect(page.locator('.conversation-markdown .katex')).toHaveCount(1);
+  const pending = (await commands(page)).find((command) => command.type === 'get_conversation_history')!;
+  await server(page, 0, {
+    type: 'command_result', action: 'get_conversation_history', request_id: pending.request_id,
+    ok: true, phase: 'completed',
+    data: { available: true, state: 'ready', mode: 'recent', source_revision: 'fresh', has_more: false,
+      entries: [
+        { id: 'new-q', role: 'user', text: 'Fresh question', timestamp: '2026-10-07T00:00:02Z' },
+        { id: 'new-a', role: 'assistant', text: 'Fresh answer', timestamp: '2026-10-07T00:00:03Z' },
+      ], diagnostics: {} },
+  });
+  await expect(page.getByText('Fresh answer', { exact: true })).toBeVisible();
+  await expect(page.getByText('Saved answer with', { exact: false })).toHaveCount(0);
+
+  await page.evaluate(() => { location.hash = '#settings'; });
+  const toggle = page.getByRole('switch', { name: 'Save Conversations and Terminals on This Device' });
+  await expect(toggle).toBeChecked();
+  await toggle.uncheck();
+  await expect.poll(() => savedConversationCount(page)).toBe(0);
+  for (const width of [390, 1280]) {
+    await page.setViewportSize({ width, height: 844 });
+    await toggle.scrollIntoViewIfNeeded();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath(`conversation-cache-settings-${width}.png`) });
+  }
+  await page.goto('/');
+  await openCachedConversation(page, false);
+  await expect(page.getByText('Fresh answer', { exact: true })).toHaveCount(0);
+  await page.goto('/');
+  await openCachedConversation(page);
+  await expect(page.getByText('Saved answer with', { exact: false })).toBeVisible();
+  expect(await savedConversationCount(page)).toBe(0);
+  await page.evaluate(() => { location.hash = '#settings'; });
+  await expect(toggle).not.toBeChecked();
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('herdr_relays') || '[]').length)).toBe(1);
+  await toggle.check();
+  await openCachedConversation(page);
+  await expect.poll(() => savedConversationCount(page)).toBe(1);
+});
+
+test('conversation cache isolates sessions, expires old previews, and clears when a relay is removed', async ({ page }) => {
+  await boot(page, [fedora]);
+  await openCachedConversation(page);
+  await expect.poll(() => savedConversationCount(page)).toBe(1);
+  await page.goto('/');
+  await openCachedConversation(page, false, 'different-session');
+  await expect(page.getByText('Saved answer with', { exact: false })).toHaveCount(0);
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    const request = indexedDB.open('herdr-conversation-cache', 1);
+    request.onsuccess = () => {
+      const db = request.result;
+      const tx = db.transaction('metadata', 'readwrite');
+      const store = tx.objectStore('metadata');
+      const rows = store.getAll();
+      rows.onsuccess = () => { for (const row of rows.result) store.put({ ...row, savedAt: 1 }); };
+      tx.oncomplete = () => { db.close(); resolve(); };
+    };
+  }));
+  await page.goto('/');
+  await openCachedConversation(page, false);
+  await expect.poll(() => savedConversationCount(page)).toBe(0);
+  await expect(page.getByText('Saved answer with', { exact: false })).toHaveCount(0);
+  await page.goto('/');
+  await openCachedConversation(page);
+  await expect.poll(() => savedConversationCount(page)).toBe(1);
+  // Removal must clear storage even before the lazy conversation view loads.
+  await page.goto('/#settings');
+  await page.getByRole('button', { name: 'Remove Fedora', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Remove Fedora?' }).getByRole('button', { name: 'Remove Relay', exact: true }).click();
+  await expect.poll(() => savedConversationCount(page)).toBe(0);
+});
+
+test('conversation cache falls back to network when browser storage is unavailable', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, 'indexedDB', { configurable: true, get() { throw new Error('Storage denied'); } });
+  });
+  await boot(page, [fedora]);
+  await openCachedConversation(page);
+  await expect(page.getByText('Saved answer with', { exact: false })).toBeVisible();
+  await page.evaluate(() => { location.hash = '#settings'; });
+  await expect(page.getByRole('status').filter({ hasText: 'Local conversation and terminal storage is unavailable' })).toBeVisible();
+  await page.getByRole('switch', { name: 'Save Conversations and Terminals on This Device' }).uncheck();
+  expect(await page.evaluate(() => localStorage.getItem('herdr_conversation_cache_enabled'))).toBe('false');
+});
+
+test('conversation cache switch stays off when its preference cannot be saved', async ({ page }) => {
+  await boot(page, [fedora], '/#settings');
+  const toggle = page.getByRole('switch', { name: 'Save Conversations and Terminals on This Device' });
+  await toggle.uncheck();
+  await page.evaluate(() => {
+    const native = Storage.prototype.setItem;
+    Storage.prototype.setItem = function(key, value) {
+      if (key === 'herdr_conversation_cache_enabled') throw new DOMException('Full', 'QuotaExceededError');
+      native.call(this, key, value);
+    };
+  });
+  await toggle.click();
+  await expect(toggle).not.toBeChecked();
+  await expect(page.getByText('Could not save the cache setting.', { exact: true })).toBeVisible();
+});
+
+test('conversation cache disable propagates to another open tab and blocks subsequent writes', async ({ page, context }) => {
+  await boot(page, [fedora]);
+  await openCachedConversation(page);
+  await expect.poll(() => savedConversationCount(page)).toBe(1);
+  const other = await context.newPage();
+  try {
+    await boot(other, [fedora], '/#settings');
+    const toggle = other.getByRole('switch', { name: 'Save Conversations and Terminals on This Device' });
+    await toggle.uncheck();
+    await expect.poll(() => savedConversationCount(page)).toBe(0);
+    await page.evaluate(() => { location.hash = '#settings'; });
+    await expect(page.getByRole('switch', { name: 'Save Conversations and Terminals on This Device' })).not.toBeChecked();
+    await openCachedConversation(page);
+    await expect(page.getByText('Saved answer with', { exact: false })).toBeVisible();
+    expect(await savedConversationCount(page)).toBe(0);
+    await toggle.check();
+    await page.evaluate(() => { location.hash = '#settings'; });
+    await expect(page.getByRole('switch', { name: 'Save Conversations and Terminals on This Device' })).toBeChecked();
+    await openCachedConversation(page);
+    await expect.poll(() => savedConversationCount(page)).toBe(1);
+  } finally { await other.close(); }
+});
+
+test('renders conversation formulas with local fonts and contained horizontal scrolling', async ({ page }, testInfo) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await boot(page, [fedora]);
+  await expect.poll(() => socketCount(page)).toBe(1);
+  await handshake(page, 0, { capabilities: ['conversation_history'] });
+  await server(page, 0, {
+    type: 'agents',
+    agents: [{ pane_id: 'w1:p1', status: 'idle', project: 'Math conversation', agent: 'codex', session: 'Current session', conversation_history_available: true }],
+  });
+  const wide = Array.from({ length: 30 }, (_, index) => `x_{${index}}^2`).join(' + ');
+  await setConversationFixture(page, {
+    entries: [{ id: 'math-1', timestamp: '2026-10-07T00:00:00Z', role: 'assistant', text: String.raw`For packed documents:
+
+\[
+C_{\text{linear}}\propto\sum_i l_i
+\]
+
+\[
+C_{\text{attention}}\propto\sum_i l_i^2
+\]
+
+Inline fraction: $\frac{a+b}{c}$.
+
+$$${wide}$$` }],
+    total: 1,
+  });
+  await page.getByRole('button', { name: 'Open Math conversation on Fedora' }).click();
+  await page.getByRole('button', { name: 'Conversation history' }).click();
+  await expect(page.locator('.conversation-markdown .katex')).toHaveCount(4);
+  await expect(page.locator('.conversation-markdown .katex-display')).toHaveCount(3);
+  await page.evaluate(() => document.fonts.ready);
+  expect(await page.evaluate(() => document.fonts.check('16px KaTeX_Main') && document.fonts.check('16px KaTeX_Math'))).toBe(true);
+  for (const width of [390, 1280]) {
+    await page.setViewportSize({ width, height: 844 });
+    const wideFormula = page.locator('.conversation-math-display').last();
+    await expect.poll(() => wideFormula.evaluate((node) => node.scrollWidth > node.clientWidth)).toBe(true);
+    await wideFormula.evaluate((node) => { node.scrollLeft = 80; });
+    await expect.poll(() => wideFormula.evaluate((node) => node.scrollLeft)).toBeGreaterThan(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath(`math-${width}.png`) });
+  }
+  expect(errors).toEqual([]);
 });
 
 test('opens a long conversation at its newest turn and holds the pin', async ({ page }) => {

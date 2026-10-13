@@ -85,6 +85,11 @@ function stableReleaseAssets(): Plugin {
       server.middlewares.use(serveVersionMetadata);
     },
     generateBundle(_options, bundle: Bundle) {
+      this.emitFile({
+        type: 'asset',
+        fileName: 'fonts/katex/LICENSE.txt',
+        source: readFileSync(new URL('node_modules/katex/LICENSE', import.meta.url), 'utf8'),
+      });
       const appJavascript = Object.values(bundle).find(
         (item): item is BundleChunk => item.type === 'chunk' && item.fileName === 'assets/app.js',
       );
@@ -213,6 +218,7 @@ export default defineConfig({
       output: {
         assetFileNames: (asset) => {
           const names = asset.names ?? [];
+          if (names.some((name) => /\.(?:woff2?|ttf)$/u.test(name))) return 'fonts/katex/[name]-[hash][extname]';
           return names.some((name) => name.endsWith('.css')) ? 'assets/app.css' : 'assets/[name][extname]';
         },
         // Lazy chunks inherit the release asset version so each release gets a

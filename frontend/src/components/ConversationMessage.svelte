@@ -4,8 +4,22 @@
 
 <script lang="ts">
   import ToolPayload from '$components/ToolPayload.svelte';
+  import { renderConversationMath } from '$lib/conversation-math';
   import { safeMarkdownHtml } from '$lib/markdown';
   import type { ConversationTool } from '$lib/types';
+
+  function renderMath(node: HTMLElement, source: string) {
+    let currentSource = source;
+    renderConversationMath(node);
+    return {
+      update(next: string) {
+        if (next === currentSource) return;
+        currentSource = next;
+        renderConversationMath(node);
+      },
+    };
+  }
+
   function preserveTableScroll(node: HTMLElement, identity: string) {
     let key = identity;
     let cleanups: Array<() => void> = [];
@@ -61,7 +75,7 @@
 </script>
 
 {#if text}
-  <div class="conversation-markdown" use:preserveTableScroll={messageId}>{@html markdown}</div>
+  <div class="conversation-markdown" use:preserveTableScroll={messageId} use:renderMath={markdown}>{@html markdown}</div>
 {/if}
 
 {#if tools.length}

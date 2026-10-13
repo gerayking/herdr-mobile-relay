@@ -6,6 +6,7 @@ import {
   HISTORY_WIRE_PAGE_SIZE,
 } from '$lib/conversation-history';
 import type { Agent, ConversationEntry, ConversationPage } from '$lib/types';
+import type { ConversationPreview } from '$lib/conversation-cache';
 
 function agent(rawPaneId = 'pane-1'): Agent {
   return {
@@ -71,6 +72,75 @@ describe('conversation history identity and batch analysis', () => {
 });
 
 describe('ConversationHistoryController', () => {
+  it('shows saved history before reconnection and starts the initial request only when the target is ready', async () => {
+    let ready = false;
+    const onInitialPage = vi.fn();
+    const request = vi.fn(async () => page({ available: false }));
+    const controller = new ConversationHistoryController(agent(), {
+      request, onInitialPage, canRequest: () => ready,
+      loadPreview: async (identity) => ({
+        identity, relayId: 'relay-1', savedAt: Date.now(), sourceRevision: 'old', historical: false,
+        entries: [entry('cached-user', 'user'), entry('cached-answer', 'assistant')],
+      }),
+    });
+    controller.start();
+    await vi.waitFor(() => expect(controller.state.preview).toBe(true));
+    controller.refresh();
+    expect(request).not.toHaveBeenCalled();
+    ready = true;
+    controller.refresh();
+    await vi.waitFor(() => expect(onInitialPage).toHaveBeenCalledTimes(1));
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(controller.state.preview).toBe(false);
+    controller.cancel();
+  });
+
+  it('loads a disk preview while the network is pending, then replaces it with fresh history', async () => {
+    let complete!: (value: ConversationPage) => void;
+    const request = vi.fn(() => new Promise<ConversationPage>((resolve) => { complete = resolve; }));
+    const controller = new ConversationHistoryController(agent(), {
+      request,
+      loadPreview: async (identity) => ({
+        identity, relayId: 'relay-1', savedAt: Date.now(), sourceRevision: 'old', historical: false,
+        entries: [entry('cached-user', 'user'), entry('cached-answer', 'assistant')],
+      }),
+    });
+    controller.start();
+    expect(request).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(controller.state.preview).toBe(true));
+    expect(controller.state.authoritative).toBe(false);
+    complete(page({ entries: [entry('new-user', 'user'), entry('new-answer', 'assistant')], sourceRevision: 'new' }));
+    await vi.waitFor(() => expect(controller.state.authoritative).toBe(true));
+    expect(controller.state.entries.map(({ id }) => id)).toEqual(['new-user', 'new-answer']);
+    controller.cancel();
+  });
+
+  it.each(['fresh-response', 'route-change', 'cancel', 'locked'])('ignores a late disk preview after %s', async (action) => {
+    let resolveDisk!: (value: ConversationPreview) => void;
+    let active = true;
+    const current = agent();
+    const controller = new ConversationHistoryController(current, {
+      request: async () => page({ entries: [entry('new-user', 'user'), entry('new-answer', 'assistant')] }),
+      loadPreview: () => new Promise((resolve) => { resolveDisk = resolve; }),
+      isActive: () => active,
+    });
+    controller.start();
+    const originalDisk = resolveDisk;
+    if (action === 'fresh-response') await vi.waitFor(() => expect(controller.state.authoritative).toBe(true));
+    if (action === 'route-change') controller.setAgent(agent('pane-2'));
+    if (action === 'cancel') controller.cancel();
+    if (action === 'locked') active = false;
+    originalDisk({
+      identity: conversationIdentity(current)!, relayId: current.relay_id,
+      savedAt: Date.now(), sourceRevision: 'old', historical: false,
+      entries: [entry('cached-user', 'user'), entry('cached-answer', 'assistant')],
+    });
+    await Promise.resolve();
+    expect(controller.state.preview).toBe(false);
+    expect(controller.state.entries.some(({ id }) => id === 'cached-answer')).toBe(false);
+    controller.cancel();
+  });
+
   it('serializes initial context loading and requests the wire maximum', async () => {
     const calls: { cursor?: string; limit?: number }[] = [];
     const request = vi.fn(async (_target: Agent, input: { cursor?: string; limit?: number }) => {

@@ -89,6 +89,60 @@ func TestCodexConversationUsesResponseItemsWithoutDuplicates(t *testing.T) {
 	}
 }
 
+func TestCodexConversationReadsArchivedSession(t *testing.T) {
+	for _, profile := range []bool{false, true} {
+		name := "default"
+		if profile {
+			name = "profile"
+		}
+		t.Run(name, func(t *testing.T) {
+			reader, home := testReader(t)
+			configDir := filepath.Join(home, ".codex")
+			if profile {
+				configDir = t.TempDir()
+				t.Setenv(agentroots.CodexListEnv, configDir)
+			}
+			filename := "rollout-2026-08-12T10-00-00-" + testSessionID + ".jsonl"
+			archive := filepath.Join(configDir, "archived_sessions", filename)
+			row := func(text string) map[string]any {
+				return map[string]any{"type": "response_item", "payload": map[string]any{
+					"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": text}},
+				}}
+			}
+			writeRows(t, archive, row("archived answer"))
+			page, err := reader.Read("codex", testSessionID, "", 80)
+			if err != nil || !page.Available || len(page.Entries) != 1 || page.Entries[0].Text != "archived answer" {
+				t.Fatalf("archived page = %#v, error = %v", page, err)
+			}
+			active := filepath.Join(configDir, "sessions", "2026", "08", "12", filename)
+			writeRows(t, active, row("active answer"))
+			page, err = NewReader(home).Read("codex", testSessionID, "", 80)
+			if err != nil || !page.Available || len(page.Entries) != 1 || page.Entries[0].Text != "active answer" {
+				t.Fatalf("active page = %#v, error = %v", page, err)
+			}
+		})
+	}
+}
+
+func TestCodexArchivedConversationRejectsEscapingSymlink(t *testing.T) {
+	reader, home := testReader(t)
+	outside := filepath.Join(t.TempDir(), "outside.jsonl")
+	writeRows(t, outside, map[string]any{"type": "response_item", "payload": map[string]any{
+		"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "outside"}},
+	}})
+	archiveRoot := filepath.Join(home, ".codex", "archived_sessions")
+	if err := os.MkdirAll(archiveRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(archiveRoot, "rollout-2026-08-12T10-00-00-"+testSessionID+".jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	page, err := reader.Read("codex", testSessionID, "", 80)
+	if err != nil || page.Available {
+		t.Fatalf("escaping archive page = %#v, error = %v", page, err)
+	}
+}
+
 func TestPiConversationConfinesReportedPath(t *testing.T) {
 	reader, home := testReader(t)
 	path := filepath.Join(home, ".pi", "agent", "sessions", "--work--", "session.jsonl")

@@ -1,3 +1,5 @@
+import { clearSavedConversationPreviews } from './conversation-storage';
+
 type ClearConversationPreviews = (relayId?: string) => void;
 const clearers = new Set<ClearConversationPreviews>();
 
@@ -11,5 +13,6 @@ export function clearConversationPreviews(): void {
 
 export function clearConversationPreviewsForRelay(relayId: string): void {
   if (!relayId) return;
+  void clearSavedConversationPreviews(relayId);
   for (const clearer of clearers) clearer(relayId);
 }

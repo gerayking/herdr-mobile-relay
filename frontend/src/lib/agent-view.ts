@@ -45,7 +45,8 @@ export function hasConversationHistory(
   agent: Agent | null,
   connection: Pick<RelayConnectionView, 'capabilities'> | null | undefined,
 ): boolean {
-  return Boolean(agent?.conversation_history_available === true && connection?.capabilities?.includes('conversation_history'));
+  return Boolean(agent?.conversation_history_available === true
+    && (agent.cachedPreview || connection?.capabilities?.includes('conversation_history')));
 }
 
 export function agentOpeningView(
@@ -58,8 +59,7 @@ export function agentOpeningView(
   const requested = effectiveAgentView(agent, defaultView, overrides);
   if (
     requested === 'conversation'
-    && connection?.status === 'connected'
-    && connection.inventory?.state === 'ready'
+    && (agent.cachedPreview || (connection?.status === 'connected' && connection.inventory?.state === 'ready'))
     && hasConversationHistory(agent, connection)
     && target
   ) {

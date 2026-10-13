@@ -1,6 +1,7 @@
 import { get, writable } from 'svelte/store';
 import { base64UrlEncode } from './base64url';
 import { clearConversationPreviews, clearConversationPreviewsForRelay } from './conversation-cache-control';
+import { loadAgentPreviews, saveAgentPreviews } from './conversation-storage';
 import {
   AttachmentBatchController,
   type AttachmentUploadCallbacks,
@@ -143,21 +144,8 @@ const PAIRING_DEFERRED_MESSAGE = 'Add Herdr to the iPhone or iPad Home Screen, t
 // coarser than the once-a-minute floor an intensively throttled background
 // timer gets, so it still fires wherever the platform keeps the page running.
 const KEEPALIVE_INTERVAL_MS = 120_000;
-// After this long hidden, holding the connection open stops being worth the
-// radio wakeups: the keepalive stops and the connection is left to lapse.
-// Becoming visible resets the bound and resumes the keepalive.
-const HIDDEN_KEEPALIVE_MAX_MS = 60 * 60_000;
-// With the keepalive running, a healthy connection is never silent for longer
-// than its cadence plus slack. A longer gap means the page was frozen, and a
-// frozen page cannot have kept its path: the remote side's ICE consent lapses
-// in about thirty seconds and the gateway reaper fires at five minutes. So a
-// stale connection is a corpse, and probing it only delays the dial.
-//
-// The slack has to cover an intensively throttled hidden tab, where a
-// two-minute interval can drift onto the next once-a-minute wakeup and the
-// reply still has to arrive: three minutes is boundary-tight and would
-// occasionally redial a healthy connection. Four still sits a full minute
-// under the reaper, so nothing a live connection does can reach it.
+// Gateway and WebRTC paths expire after a long frozen interval. A direct
+// WebSocket can survive it, so silence alone must not discard that session.
 const FRESH_PROOF_MS = 240_000;
 // Gateway-relayed traffic is metered project bandwidth. Cap scrollback while
 // honoring the user's refresh rate; acknowledged deltas keep idle frames off
@@ -400,6 +388,7 @@ function normalizeAgentTargetFields(agent: Partial<Agent>): Partial<Agent> {
   const generation = Number(agent.generation);
   return {
     ...agent,
+    cachedPreview: false,
     server_session_id: typeof agent.server_session_id === 'string' && agent.server_session_id.trim()
       ? agent.server_session_id.trim()
       : undefined,
@@ -454,8 +443,7 @@ interface RelayConnection extends RelayConnectionView {
   connectingSince: number;
   /**
    * When the app last heard anything from this relay, including the handshake
-   * that made it ready. The keepalive bounds it, and a resume compares it
-   * against FRESH_PROOF_MS to tell a resumable path from a dead one.
+   * that made it ready. Used to retire stale gateway and WebRTC paths on resume.
    */
   lastMessageAt: number;
   directoryGeneration: number;
@@ -570,7 +558,6 @@ class RelayStore {
   private reconnectEnabled = true;
   private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
   private hidden = false;
-  private hiddenSince = 0;
   private toastId = 0;
   private pushConfigHandler: ((relayId: string) => void) | null = null;
   private readonly deviceCredentials = new BrowserDeviceCredentialStore(localStorage);
@@ -612,6 +599,10 @@ class RelayStore {
       }
     }
     this.relayConfigs.set(relays);
+    if (!connect && !this.agentsValue.length) {
+      this.agentsValue = loadAgentPreviews(relays);
+      this.publishAgents('saved startup preview');
+    }
     if (connect) this.connectAll();
   }
 
@@ -821,8 +812,8 @@ class RelayStore {
     this.connectionsValue.clear();
     this.connections.set(new Map());
     if (!preserveAgents) {
-      this.agentsValue = [];
-      this.agents.set([]);
+      this.agentsValue = loadAgentPreviews(get(this.relayConfigs));
+      this.publishAgents('saved startup preview');
       this.workspacesValue = [];
       this.workspaces.set([]);
     }
@@ -1122,7 +1113,6 @@ class RelayStore {
   setHidden(hidden: boolean): void {
     if (this.hidden === hidden) return;
     this.hidden = hidden;
-    this.hiddenSince = hidden ? Date.now() : 0;
     this.syncKeepalive();
   }
 
@@ -1146,10 +1136,9 @@ class RelayStore {
         this.connectRelay(relay);
         continue;
       }
-      // The keepalive gives every healthy connection a freshness bound, so a
-      // silence longer than FRESH_PROOF_MS is a corpse: dial now instead of
-      // spending the probe timeout proving what the silence already said.
-      if (Date.now() - connection.lastMessageAt > FRESH_PROOF_MS) {
+      // Browser suspension stops application messages even when the underlying
+      // WebSocket survives. Probe it before giving up its authenticated session.
+      if (connection.path !== 'websocket' && Date.now() - connection.lastMessageAt > FRESH_PROOF_MS) {
         this.connectRelay(relay);
         continue;
       }
@@ -1182,7 +1171,7 @@ class RelayStore {
    * is covered without each call site having to remember this.
    */
   private syncKeepalive(): void {
-    const wanted = this.reconnectEnabled && !this.keepaliveExhausted() && this.hasConnectedRelay();
+    const wanted = this.reconnectEnabled && this.hasConnectedRelay();
     if (wanted === (this.keepaliveTimer !== null)) return;
     if (!wanted) {
       this.stopKeepalive();
@@ -1195,11 +1184,6 @@ class RelayStore {
     if (!this.keepaliveTimer) return;
     clearInterval(this.keepaliveTimer);
     this.keepaliveTimer = null;
-  }
-
-  /** True once a hidden page has held its connections open long enough. */
-  private keepaliveExhausted(): boolean {
-    return this.hidden && Date.now() - this.hiddenSince >= HIDDEN_KEEPALIVE_MAX_MS;
   }
 
   private hasConnectedRelay(): boolean {
@@ -1218,10 +1202,6 @@ class RelayStore {
    * capability gating to save a handful of bytes every two minutes.
    */
   private sendKeepalive(): void {
-    if (this.keepaliveExhausted()) {
-      this.stopKeepalive();
-      return;
-    }
     for (const [relayId, connection] of this.connectionsValue) {
       // The keepalive proves a path is alive; it never dials one. Relays that
       // are disconnected or still dialing belong to the reconnect paths.
@@ -1519,6 +1499,8 @@ class RelayStore {
       );
       this.reconcileResponding();
       this.publishAgents('agents snapshot');
+      const relay = get(this.relayConfigs).find((item) => item.id === relayId);
+      if (relay && connection?.inventory.state === 'ready') saveAgentPreviews(relay, incoming);
       return;
     }
     if (message.type === 'blocked') {
@@ -1631,6 +1613,7 @@ class RelayStore {
       const deltaNoEcho = typeof message.no_echo === 'boolean' ? message.no_echo : frame?.noEcho;
       this.terminalFramesValue.set(paneId, {
         paneId,
+        target: paneMessageTarget(message) || undefined,
         content: nextContent,
         format: String(message.format || frame?.format || 'plain'),
         truncated: typeof message.truncated === 'boolean' ? message.truncated : frame?.truncated,
@@ -1656,6 +1639,7 @@ class RelayStore {
       }
       const nextFrame: TerminalFrame = {
         paneId,
+        target: paneMessageTarget(message) || undefined,
         content: typeof message.content === 'string' ? message.content : '(empty)',
         format: String(message.format || 'plain'),
       };
@@ -2020,6 +2004,7 @@ class RelayStore {
   }
 
   sendToAgent(agent: Agent, payload: Record<string, any>, timeoutMs?: number, signal?: AbortSignal): Promise<CommandResult> {
+    if (agent.cachedPreview) return Promise.reject(new CommandError('Waiting for this agent to reconnect'));
     const identity = this.agentTargetPayload(agent);
     if (!identity) return Promise.reject(new CommandError('This agent no longer has an exact terminal identity'));
     return this.sendCommand(agent.relay_id, {

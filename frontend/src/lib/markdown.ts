@@ -1,5 +1,9 @@
 const URL_PATTERN = /https?:\/\/[^\s<>"']+/giu;
-const INLINE_PATTERN = /(`[^`\n]+`|\*\*[^*\n]+\*\*|\[[^\]\n]+\]\(https?:\/\/[^\s)]+\)|https?:\/\/[^\s<>"']+)/giu;
+const INLINE_PATTERN = /(`[^`\n]+`|(?<!\\)\\\([^\n]*?\\\)|(?<!\\)\\\[[^\n]*?\\\]|(?<!\\)\$\$[^\n]+?\$\$|(?<![\\$])\$(?![\s$])(?:\\[^\n]|[^$\\\n])*?(?<!\s)\$(?![\d$])|\*\*[^*\n]+\*\*|\[[^\]\n]+\]\(https?:\/\/[^\s)]+\)|https?:\/\/[^\s<>"']+)/giu;
+
+function mathSource(value: string, display: boolean): string {
+  return `<span class="conversation-math${display ? ' conversation-math-display' : ''}" data-math-display="${display}">${escapeHtml(value)}</span>`;
+}
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => ({
@@ -63,6 +67,10 @@ function renderInline(value: string, highlight: string): string {
     const token = match[0];
     if (token.startsWith('`') && token.endsWith('`')) {
       output += `<code>${escapedWithHighlight(token.slice(1, -1), highlight)}</code>`;
+    } else if (token.startsWith('\\(') || token.startsWith('\\[') || token.startsWith('$$')) {
+      output += mathSource(token.slice(2, -2), !token.startsWith('\\('));
+    } else if (token.startsWith('$')) {
+      output += mathSource(token.slice(1, -1), false);
     } else if (token.startsWith('**') && token.endsWith('**')) {
       output += `<strong>${renderInline(token.slice(2, -2), highlight)}</strong>`;
     } else if (token.startsWith('[')) {
@@ -239,6 +247,30 @@ export function safeMarkdownHtml(value: string, highlight = ''): string {
     if (inCode) {
       codeLines.push(line);
       continue;
+    }
+    const mathStart = line.match(/^\s*(\\\[|\$\$)(.*)$/u);
+    if (mathStart) {
+      const closing = mathStart[1] === '\\[' ? '\\]' : '$$';
+      const mathLines: string[] = [];
+      let end = index;
+      let remainder = mathStart[2];
+      while (end < lines.length && !/^\s*```/u.test(remainder)) {
+        const close = remainder.indexOf(closing);
+        if (close >= 0) {
+          mathLines.push(remainder.slice(0, close));
+          flushParagraph();
+          flushList();
+          output.push(`<div class="conversation-math-block">${mathSource(mathLines.join('\n'), true)}</div>`);
+          const suffix = remainder.slice(close + closing.length);
+          if (suffix.trim()) paragraph.push(suffix);
+          index = end;
+          break;
+        }
+        mathLines.push(remainder);
+        end += 1;
+        remainder = lines[end] || '';
+      }
+      if (end < lines.length && !/^\s*```/u.test(remainder)) continue;
     }
     if (!line.trim()) {
       flushParagraph();

@@ -11,6 +11,7 @@
   import ManageDialog from '$components/ManageDialog.svelte';
   import SettingsView from '$components/SettingsView.svelte';
   import TerminalView from '$components/TerminalView.svelte';
+  import { terminalPreviewIdentity } from '$lib/terminal-cache';
   import UpdateProgressDialog from '$components/UpdateProgressDialog.svelte';
   import WorkspaceInspector from '$components/WorkspaceInspector.svelte';
   import WorkspaceManager from '$components/WorkspaceManager.svelte';
@@ -307,7 +308,7 @@
   $effect(() => {
     void visibilityRevision;
     const visible = document.visibilityState === 'visible' && document.hasFocus();
-    const target = $currentView.view === 'terminal' && activeAgent && !$securityState.locked
+    const target = $currentView.view === 'terminal' && activeAgent && !activeAgent.cachedPreview && !$securityState.locked
       && activeAgent.server_session_id === 'primary'
       && activeAgent.terminal_id
       && Number.isSafeInteger(activeAgent.generation)
@@ -441,7 +442,7 @@
   });
 
   function openAgent(agent: Agent) {
-    if (relayStore.deviceCredential(agent.relay_id)?.role !== 'reader') {
+    if (!agent.cachedPreview && relayStore.deviceCredential(agent.relay_id)?.role !== 'reader') {
       void relayStore.acknowledgePane(agent);
     }
     navigate(agentOpeningView(
@@ -715,16 +716,16 @@
       <p role="alert">This agent is not available.</p>
       <Button onclick={() => replaceView({ view: 'agents' })}>Back to agents</Button>
     </main>
-  {:else if $currentView.view === 'terminal' && activeAgent && activeConnection?.status === 'connected' && activeConnection.inventory.state !== 'ready'}
+  {:else if $currentView.view === 'terminal' && activeAgent && !activeAgent.cachedPreview && activeConnection?.status === 'connected' && activeConnection.inventory.state !== 'ready'}
     <main class="page terminal-loading" aria-label="Agent inventory unavailable">
       <p role="alert">{activeConnection.inventory.message || 'This computer’s Herdr agent inventory is not ready.'}</p>
       <Button onclick={() => replaceView({ view: 'agents' })}>Back to agents</Button>
     </main>
   {:else if $currentView.view === 'terminal' && activeAgent}
-    {#key activeAgent.pane_id}
+    {#key terminalPreviewIdentity(activeAgent) || activeAgent.pane_id}
       <div class="terminal-layout">
         <AgentRail agents={$agents} active={activeAgent} onopen={openAgent} onjump={() => { jumpOpen = true; }} />
-        <TerminalView bind:this={terminalView} agent={activeAgent} allAgents={$agents} frame={$frames.get(activeAgent.pane_id)} responding={$responding} readOnly={activeReadOnly} />
+        <TerminalView bind:this={terminalView} agent={activeAgent} allAgents={$agents} frame={$frames.get(activeAgent.pane_id)} responding={$responding} readOnly={activeReadOnly || activeAgent.cachedPreview === true} />
       </div>
     {/key}
   {:else if $currentView.view === 'terminal'}

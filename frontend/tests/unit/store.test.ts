@@ -1906,10 +1906,11 @@ describe('relay command store', () => {
     relayStore.addRelay({ label: 'Debian', url: 'wss://debian.example', token: '' });
     // Adding a relay redials both; keep only the two live sockets so a later
     // count means "nothing was redialed".
-    const [connected, dialing] = MockWebSocket.instances.slice(-2);
-    MockWebSocket.instances = [connected, dialing];
-    expect(dialing.url).toBe('wss://debian.example');
+    const [connected, other] = MockWebSocket.instances.slice(-2);
+    MockWebSocket.instances = [connected, other];
+    expect(other.url).toBe('wss://debian.example');
     connected.open();
+    other.open();
     connected.message({ type: 'push_config', protocol: 3, host: 'fedora', capabilities: [], agent_profiles: [] });
     const sentOnConnect = connected.sent.length;
 
@@ -1918,13 +1919,12 @@ describe('relay command store', () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(JSON.parse(connected.sent.at(-1)!).type).toBe('refresh_agents');
     expect(connected.sent).toHaveLength(sentOnConnect + 1);
-    // The keepalive proves a live path; it never dials one, so the relay still
-    // completing its handshake hears nothing.
-    expect(dialing.sent).toEqual([]);
+    expect(JSON.parse(other.sent.at(-1)!).type).toBe('refresh_agents');
 
     // The reply doubles as the health signal: an answered ping keeps the socket
     // past the gateway's five-minute idle reaper.
     connected.message({ type: 'inventory_status', state: 'ready' });
+    other.message({ type: 'inventory_status', state: 'ready' });
     await vi.advanceTimersByTimeAsync(120_000);
     expect(connected.sent).toHaveLength(sentOnConnect + 2);
     expect(MockWebSocket.instances).toHaveLength(2);
@@ -1965,7 +1965,7 @@ describe('relay command store', () => {
     }
   });
 
-  it('stops pinging after an hour hidden and starts again when the app comes back', async () => {
+  it('keeps a healthy hidden connection alive beyond an hour', async () => {
     vi.useFakeTimers();
     const visibility = Object.getOwnPropertyDescriptor(document, 'visibilityState');
     try {
@@ -1977,30 +1977,26 @@ describe('relay command store', () => {
 
       Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
       relayStore.setHidden(true);
-      // Answer every ping: a healthy hidden page holds its socket for the hour.
-      for (let tick = 0; tick < 29; tick += 1) {
+      // Answer every ping while the browser continues running in the background.
+      for (let tick = 0; tick < 36; tick += 1) {
         await vi.advanceTimersByTimeAsync(120_000);
         socket.message({ type: 'inventory_status', state: 'ready' });
       }
-      expect(pings()).toBe(onConnect + 29);
-
-      // An hour hidden: the radio wakeups stop being worth it and the socket
-      // is left to lapse on its own.
-      await vi.advanceTimersByTimeAsync(120_000);
-      await vi.advanceTimersByTimeAsync(600_000);
-      expect(pings()).toBe(onConnect + 29);
+      expect(pings()).toBe(onConnect + 36);
+      expect(MockWebSocket.instances).toHaveLength(1);
+      expect(socket.readyState).toBe(MockWebSocket.OPEN);
 
       Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
       relayStore.setHidden(false);
       await vi.advanceTimersByTimeAsync(120_000);
-      expect(pings()).toBe(onConnect + 30);
+      expect(pings()).toBe(onConnect + 37);
     } finally {
       if (visibility) Object.defineProperty(document, 'visibilityState', visibility);
       else Reflect.deleteProperty(document, 'visibilityState');
     }
   });
 
-  it('dials a stale resumed connection at once and only probes a fresh one', async () => {
+  it('reuses a responsive WebSocket after a long frozen interval', async () => {
     vi.useFakeTimers();
     const socket = MockWebSocket.instances.at(-1)!;
     socket.open();
@@ -2022,16 +2018,46 @@ describe('relay command store', () => {
     expect(MockWebSocket.instances).toHaveLength(1);
     expect(JSON.parse(socket.sent.at(-1)!).type).toBe('refresh_agents');
     socket.message({ type: 'inventory_status', state: 'ready' });
-    const beforeResume = socket.sent.length;
+    // Frozen browser timers do not prove that the WebSocket itself has closed.
+    vi.setSystemTime(Date.now() + 90 * 60_000);
+    relayStore.revalidateConnections(2_000);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(JSON.parse(socket.sent.at(-1)!).type).toBe('refresh_agents');
+    socket.message({ type: 'inventory_status', state: 'ready' });
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(socket.readyState).toBe(MockWebSocket.OPEN);
+  });
 
-    // A frozen page runs no timers while the clock keeps moving, which is the
-    // gap `setSystemTime` reproduces here. The keepalive cannot have run, so
-    // the silence is proof the path died with the freeze.
+  it('replaces an unresponsive WebSocket after probing across a long freeze', async () => {
+    vi.useFakeTimers();
+    const socket = MockWebSocket.instances.at(-1)!;
+    socket.open();
     vi.setSystemTime(Date.now() + 240_001);
     relayStore.revalidateConnections(2_000);
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
     expect(MockWebSocket.instances).toHaveLength(2);
-    // Dialed on the spot, with no probe spent on the corpse.
-    expect(socket.sent).toHaveLength(beforeResume);
+    expect(socket.readyState).toBe(MockWebSocket.CLOSED);
+  });
+
+  it.each(['gateway', 'webrtc'] as const)('still replaces a stale %s path immediately', (kind) => {
+    vi.useFakeTimers();
+    const connect = vi.fn();
+    const close = vi.fn();
+    transportHijack.current = (_relay, handlers) => ({
+      kind,
+      connect: () => { connect(); handlers.onStatus('connected', { path: kind }); },
+      send: () => true,
+      close,
+    });
+    relayStore.connectAll();
+    expect(connect).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(Date.now() + 240_001);
+    relayStore.revalidateConnections(2_000);
+    expect(connect).toHaveBeenCalledTimes(2);
+    expect(close).toHaveBeenCalledTimes(1);
   });
 
   it('stamps the last-heard time on inbound traffic and clears the pending probe', async () => {

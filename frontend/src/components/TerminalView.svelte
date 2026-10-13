@@ -20,6 +20,8 @@
     sortedAgents,
   } from '$lib/agents';
   import { clearPromptDraft, loadPromptDraft, savePromptDraft } from '$lib/prompt-drafts';
+  import { conversationStorageEnabled } from '$lib/conversation-storage';
+  import { loadTerminalPreview, persistTerminalPreview, terminalPreviewIdentity } from '$lib/terminal-cache';
   import {
     findTerminalText,
     terminalMatchFragments,
@@ -78,6 +80,68 @@
     responding: Set<string>;
     readOnly?: boolean;
   } = $props();
+
+  let savedFrame = $state.raw<TerminalFrame | undefined>(undefined);
+  const liveFrame = $derived(frame?.paneId === agent.pane_id
+    && (!frame.target || targetRefMatchesAgent(frame.target, agent)) ? frame : undefined);
+  const displayFrame = $derived(liveFrame || ($conversationStorageEnabled && !$securityState.locked ? savedFrame : undefined));
+  let pendingPreview: { agent: Agent; frame: TerminalFrame } | null = null;
+  let previewWriteTimer: ReturnType<typeof setTimeout> | null = null;
+  let previewWrittenAt = 0;
+  let lastPreviewFrame: TerminalFrame | undefined;
+
+  function flushTerminalPreview() {
+    if (previewWriteTimer !== null) clearTimeout(previewWriteTimer);
+    previewWriteTimer = null;
+    const pending = pendingPreview;
+    pendingPreview = null;
+    if (!pending) return;
+    previewWrittenAt = Date.now();
+    void persistTerminalPreview(pending.agent, pending.frame);
+  }
+
+  $effect(() => {
+    const identity = terminalPreviewIdentity(agent);
+    const enabled = $conversationStorageEnabled && !$securityState.locked;
+    let cancelled = false;
+    untrack(() => {
+      if (!enabled || !identity) {
+        if (savedFrame && !liveFrame) { renderedRows = []; lastContent = ''; }
+        savedFrame = undefined;
+        return;
+      }
+      if (liveFrame || savedFrame) return;
+      const target = { ...agent };
+      void loadTerminalPreview(target).then(preview => {
+        if (!cancelled && !liveFrame && preview?.identity === terminalPreviewIdentity(agent)) savedFrame = preview.frame;
+      });
+    });
+    return () => { cancelled = true; };
+  });
+
+  $effect(() => {
+    const next = liveFrame;
+    const target = agent;
+    const enabled = $conversationStorageEnabled;
+    untrack(() => {
+      if (!enabled) {
+        pendingPreview = null;
+        lastPreviewFrame = undefined;
+        if (previewWriteTimer !== null) clearTimeout(previewWriteTimer);
+        previewWriteTimer = null;
+        return;
+      }
+      if (!next || next === lastPreviewFrame || target.cachedPreview || next.noEcho || next.resizeSettling) return;
+      lastPreviewFrame = next;
+      pendingPreview = { agent: { ...target }, frame: next };
+      if (Date.now() - previewWrittenAt >= 2_000) flushTerminalPreview();
+      else if (previewWriteTimer === null) previewWriteTimer = setTimeout(flushTerminalPreview, 2_000);
+    });
+  });
+  onDestroy(() => {
+    pendingPreview = null;
+    if (previewWriteTimer !== null) clearTimeout(previewWriteTimer);
+  });
 
   interface VirtualTerminalAnchor {
     index: number;
@@ -223,13 +287,13 @@
   // A locked app is showing this pane to nobody who has verified, so it counts
   // as hidden for reads and watches. The connection now survives the lock, so
   // without this the terminal would keep streaming behind the unlock screen.
-  const paneVisible = () => document.visibilityState === 'visible' && !$securityState.locked;
+  const paneVisible = () => document.visibilityState === 'visible' && !$securityState.locked && !agent.cachedPreview;
   // The lease needs its own gate: being locked is not the same as being
   // briefly hidden. The grace window below exists so an app switch does not
   // resize the computer's pane, but an unverified holder must not keep it
   // narrowed at all, so a lock skips the grace instead of entering it. The
   // relay's TTL hands the size back if the lock outlasts it.
-  const paneLeaseAllowed = () => !$securityState.locked
+  const paneLeaseAllowed = () => !$securityState.locked && !agent.cachedPreview
     && paneLeaseRenewalAllowed(document.visibilityState === 'visible', hiddenAt, Date.now());
   // A lock flip changes what "visible" means for this pane, and no visibility
   // event comes with it, so the pane handler is called directly.
@@ -328,7 +392,7 @@
     );
   });
   const relaySpeechLanguages = $derived($connections.get(agent.relay_id)?.speechLanguages ?? []);
-  const terminalCopyText = $derived(latestCompletedResponse(frame?.content || ''));
+  const terminalCopyText = $derived(latestCompletedResponse(displayFrame?.content || ''));
   const terminalContentStyle = $derived.by(() => {
     // Every width is emitted in px of the measured probe cell, never in ch:
     // Safari's Core Text port resolves 1ch against different font metrics
@@ -413,7 +477,7 @@
     void $theme;
     untrack(() => {
       if (!lastContent) return;
-      const next = frame;
+      const next = displayFrame;
       if (!next || next.paneId !== agent.pane_id) return;
       lastContent = '';
       void applyFrame(next, lastPreserveLayout, lastPreserveLineEnds);
@@ -421,7 +485,7 @@
   });
 
   $effect(() => {
-    const next = frame;
+    const next = displayFrame;
     const matchingFrame = next?.paneId === agent.pane_id ? next : undefined;
     const preserve = true;
     // Keyed to the session, not to resizeLayoutActive, on purpose: a relay that
@@ -486,7 +550,7 @@
 
   $effect(() => {
     const paneId = agent.pane_id;
-    const connected = $connections.get(agent.relay_id)?.status === 'connected';
+    const connected = !agent.cachedPreview && $connections.get(agent.relay_id)?.status === 'connected';
     if (!connected) {
       requestedPaneId = '';
       return;
@@ -498,7 +562,7 @@
   });
 
   $effect(() => {
-    const locked = $securityState.locked;
+    const locked = $securityState.locked || agent.cachedPreview === true;
     if (locked === paneLocked) return;
     paneLocked = locked;
     paneVisibilityChanged?.();
@@ -659,6 +723,7 @@
     let lastRefreshAt = Date.now();
     const visibilityChanged = () => {
       if (!paneVisible()) {
+        flushTerminalPreview();
         // Traffic stops while hidden, but lease renewals keep going for a
         // bounded grace: desktop Safari reports an occluded window as hidden,
         // so treating every app switch as departure lapsed the lease and
@@ -1767,7 +1832,7 @@
   }
 
   function beginResizeSettling() {
-    resizeFrameBaseline = frame;
+    resizeFrameBaseline = displayFrame;
     resizeWaitExpired = false;
     if (resizeWaitTimer !== null) clearTimeout(resizeWaitTimer);
     resizeWaitTimer = setTimeout(() => {
@@ -2105,7 +2170,9 @@
   class="terminal-view"
   aria-label={`${questionMode ? 'Questions' : 'Terminal'} for ${agent.project || agent.name || agent.agent || 'agent'}`}
 >
-  {#if readOnly}
+  {#if agent.cachedPreview}
+    <p class="key-feedback" role="status">Reconnecting...</p>
+  {:else if readOnly}
     <p class="key-feedback" role="status">Reader access is read only. Use a controller device to send input or answer prompts.</p>
   {/if}
   {#if questionMode && interaction}

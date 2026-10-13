@@ -13,6 +13,7 @@ import type {
  * credential. It matches `transport.UnauthorizedCloseCode` on the relay.
  */
 export const UNAUTHORIZED_CLOSE_CODE = 4401;
+export const WEBSOCKET_CONNECT_TIMEOUT_MS = 10_000;
 
 /**
  * The original direct browser WebSocket path: the phone reaches the relay over
@@ -46,10 +47,18 @@ function createWebSocketChannel(
 ): FrameChannel {
   let socket: WebSocket | null = null;
   let closed = false;
+  let connectTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function clearConnectTimer(): void {
+    if (connectTimer === null) return;
+    clearTimeout(connectTimer);
+    connectTimer = null;
+  }
 
   function fail(reason: string): void {
     if (closed) return;
     closed = true;
+    clearConnectTimer();
     socket?.close();
     handlers.onClose({ reason });
   }
@@ -67,8 +76,10 @@ function createWebSocketChannel(
         fail('Relay connection failed');
         return;
       }
+      connectTimer = setTimeout(() => fail('Relay connection timed out'), WEBSOCKET_CONNECT_TIMEOUT_MS);
       socket.onopen = () => {
         if (closed) return;
+        clearConnectTimer();
         // A relay that ignores the encrypted subprotocol would otherwise get a
         // plaintext hello, so refuse the socket before anything is sent.
         if (encrypted
@@ -89,6 +100,7 @@ function createWebSocketChannel(
       socket.onclose = (event) => {
         if (closed) return;
         closed = true;
+        clearConnectTimer();
         // 4401: the relay refuses this device's credential. Retrying replays
         // the same rejected material, so the path manager must not.
         if (event?.code === UNAUTHORIZED_CLOSE_CODE) {
@@ -108,6 +120,7 @@ function createWebSocketChannel(
     },
     close(): void {
       closed = true;
+      clearConnectTimer();
       socket?.close();
     },
   };

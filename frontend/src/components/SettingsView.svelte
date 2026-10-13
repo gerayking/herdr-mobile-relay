@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { conversationStorageEnabled, conversationStorageError, setConversationStorageEnabled } from '$lib/conversation-storage';
   import DeviceSettings from '$components/DeviceSettings.svelte';
   import NotificationSettings from '$components/NotificationSettings.svelte';
   import PairDeferredRelay from '$components/PairDeferredRelay.svelte';
@@ -160,6 +161,7 @@
   }
   let previousAppUpdate = $state<AppUpdateStatus | null>(null);
   let checkingUpdates = $state(false);
+  let conversationCacheChoice = $derived($conversationStorageEnabled);
   const appUpdateChecking = $derived(checkingUpdates || $appUpdate.state === 'checking');
   const appUpdateForLayout = $derived(
     appUpdateChecking && previousAppUpdate ? previousAppUpdate : $appUpdate,
@@ -773,6 +775,17 @@
 
   <Card>
     <h3>Agents</h3>
+    <AppSwitch
+      bind:checked={conversationCacheChoice}
+      label="Save Conversations and Terminals on This Device"
+      onchange={async (value) => {
+        await setConversationStorageEnabled(value);
+        conversationCacheChoice = $conversationStorageEnabled;
+      }}
+    />
+    {#if $conversationStorageError}
+      <p class="hint" role="status">{$conversationStorageError}</p>
+    {/if}
     <fieldset class="choice-grid compact-grid">
       <legend>Default View</legend>
       {#each AGENT_VIEWS as item (item)}

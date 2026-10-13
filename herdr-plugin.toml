@@ -1,5 +1,5 @@
 # herdr-plugin.toml registers Herdr Mobile Relay with herdr as a plugin.
-# Install it with `herdr plugin install 0cv/herdr-mobile-relay` (herdr clones
+# Install it with `herdr plugin install gerayking/herdr-mobile-relay` (herdr clones
 # this repo, runs the [[build]] pre-warm below after confirmation, and
 # registers the entry points), or `herdr plugin link .` from a local checkout.
 #
@@ -17,7 +17,7 @@
 
 id = "herdr-mobile-relay.events"
 name = "Herdr Mobile Relay"
-version = "0.22.6"
+version = "0.22.6001"
 
 # Herdr 0.7.5 introduced the live-agent facade used for atomic starts and prompts.
 min_herdr_version = "0.7.5"

@@ -13,6 +13,7 @@
   } from '$lib/conversation-history';
   import {
     getConversationPreview,
+    loadConversationPreview,
     putConversationPreview,
   } from '$lib/conversation-cache';
   import {
@@ -109,7 +110,8 @@
     const pendingIds = new Set(pendingPrefix.map((entry) => entry.id));
     return compact.filter((entry) => !pendingIds.has(entry.id));
   });
-  const inputLocked = $derived(readOnly || agentNeedsResponse(agent) || agentNeedsInspection(agent));
+  const historyTargetReady = $derived(!agent.cachedPreview);
+  const inputLocked = $derived(!historyTargetReady || readOnly || agentNeedsResponse(agent) || agentNeedsInspection(agent));
   const inputPlaceholder = $derived(readOnly
     ? 'Reader access is read only'
     : agentNeedsResponse(agent)
@@ -124,6 +126,7 @@
   });
   const historyBusy = $derived(requestPhase !== 'idle');
   const historyStatusText = $derived.by(() => {
+    if (!historyTargetReady && !entries.length) return 'Connecting to agent...';
     if (pausedReason) return pausedReason;
     if (latestGapOutstanding) return 'Checking for new messages…';
     if (requestPhase === 'preparing') return 'Loading conversation context…';
@@ -167,10 +170,12 @@
       onState: applyHistoryState,
       onInitialPage: (page) => onInitialPage?.(page),
       getPreview: (identity) => getConversationPreview(identity),
+      loadPreview: (identity) => loadConversationPreview(identity),
       putPreview: (preview) => putConversationPreview(preview),
       isActive: () => mounted
         && document.visibilityState !== 'hidden'
         && !$securityState.locked,
+      canRequest: () => historyTargetReady,
     });
     controllerReady = true;
     historyController.start();
@@ -291,6 +296,11 @@
   });
 
   $effect(() => {
+    if (controllerReady && historyTargetReady && historyController?.state.initialOutcome === 'pending'
+      && historyController.state.requestPhase === 'idle') historyController.refresh();
+  });
+
+  $effect(() => {
     const locked = $securityState.locked;
     if (!controllerReady || !historyController) return;
     if (locked || document.visibilityState === 'hidden') historyController.pause();
@@ -378,7 +388,7 @@
       ? next.error.message
       : '';
     loadingOlder = next.requestPhase === 'older';
-    loading = !entries.length && !previewVisible && next.requestPhase === 'initial';
+    loading = !entries.length && !previewVisible && (next.requestPhase === 'initial' || !historyTargetReady);
 
     const prepended = oldEntries.length > 0
       && next.entries.findIndex((entry) => entry.id === oldEntries[0].id) > 0;
@@ -946,7 +956,9 @@
     {#if attachmentSnapshot?.items.length}
       <AttachmentProgress snapshot={attachmentSnapshot} oncancel={cancelAttachmentUpload} onrestart={restartAttachmentUpload} />
     {/if}
-    {#if inputLocked}
+    {#if !historyTargetReady}
+      <p class="conversation-composer-status" role="status">Reconnecting...</p>
+    {:else if inputLocked}
       <p class="conversation-composer-status" role="status">Switch to Terminal to handle the pending agent interaction.</p>
     {:else if uploadStatus}
       <p class:error={uploadError} class="conversation-composer-status" role="status">{uploadStatus}</p>

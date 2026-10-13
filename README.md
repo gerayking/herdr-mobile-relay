@@ -1,5 +1,11 @@
 # Herdr Mobile Relay
 
+> Geray's custom distribution: **0.22.6001**, based on upstream 0.22.6.
+> Install the pinned custom release with
+> `herdr plugin install gerayking/herdr-mobile-relay --ref v0.22.6001 --yes`.
+> See [Custom distribution](docs/custom-distribution.md) for multi-machine setup,
+> local changes, and release verification. Documentation below describes the upstream project.
+
 [![check](https://github.com/0cv/herdr-mobile-relay/actions/workflows/check.yml/badge.svg)](https://github.com/0cv/herdr-mobile-relay/actions/workflows/check.yml)
 
 Control [Herdr](https://herdr.dev) agents from your phone. Each Linux or macOS

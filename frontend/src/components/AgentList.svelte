@@ -472,8 +472,8 @@
         <button
           class="agent-open"
           aria-label={`Open ${displayName(agent)} on ${hostLabel(agent)}`}
-          disabled={!inventoryReady}
-          title={!inventoryReady
+          disabled={!inventoryReady && !agent.cachedPreview}
+          title={!inventoryReady && !agent.cachedPreview
             ? 'This cached agent is unavailable until Herdr inventory recovers.'
             : reorderWorkspace ? 'Hold to reorder this tab; Alt+arrow keys also work.' : undefined}
           aria-keyshortcuts={reorderWorkspace ? 'Alt+ArrowUp Alt+ArrowDown' : undefined}

@@ -443,6 +443,12 @@ textarea { min-height: 6.5rem; resize: vertical; }
 .conversation-markdown :not(pre) > code { background: var(--secondary); border: 1px solid var(--border); border-radius: .25rem; font-family: ui-monospace, monospace; font-size: .9em; padding: .08rem .22rem; }
 .conversation-markdown a { color: var(--primary); text-decoration: underline; text-underline-offset: .14em; }
 .conversation-markdown mark { background: color-mix(in srgb, var(--warning) 60%, transparent); border-radius: .12rem; color: inherit; }
+.conversation-markdown .conversation-math { overflow-wrap: normal; }
+.conversation-markdown .conversation-math-display { display: block; max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; padding: .25rem 0; }
+.conversation-markdown .conversation-math-block { margin: .55rem 0; min-width: 0; }
+.conversation-markdown .katex { font-size: 1.1em; }
+.conversation-markdown .katex-display { margin: .25rem 0; text-align: left; }
+.conversation-markdown .katex-display > .katex { text-align: left; }
 .conversation-markdown hr { border: 0; border-top: 1px solid var(--border); margin: .8rem 0; }
 .conversation-markdown .conversation-table { margin: .6rem 0; max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; }
 .conversation-markdown table { border-collapse: collapse; font-size: .72rem; min-width: 100%; width: max-content; }
@@ -506,6 +512,10 @@ textarea { min-height: 6.5rem; resize: vertical; }
 .term-content {
   background: var(--terminal);
   color: var(--terminal-text);
+  /* Keep glyphs and the cell probe at the same scale while cached output
+     changes from the pending layout to the leased terminal width. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;

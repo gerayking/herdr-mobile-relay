@@ -95,10 +95,12 @@ export interface ConversationHistoryControllerOptions {
   /** Called only for an accepted, cursorless unavailable network result. */
   onInitialPage?: (page: ConversationPage) => void;
   getPreview?: (identity: string) => ConversationPreview | null;
+  loadPreview?: (identity: string) => Promise<ConversationPreview | null>;
   putPreview?: (preview: ConversationPreview) => void;
   now?: () => number;
   yieldToBrowser?: () => Promise<void>;
   isActive?: () => boolean;
+  canRequest?: () => boolean;
   preparationIntervalMs?: number;
   maxPreparationPolls?: number;
   maxPagesPerDemand?: number;
@@ -166,10 +168,11 @@ export function analyzeConversationBatch(
 export class ConversationHistoryController {
   private agent: Agent;
   private readonly options: Required<Pick<ConversationHistoryControllerOptions,
-    'request' | 'now' | 'yieldToBrowser' | 'isActive'>>;
+    'request' | 'now' | 'yieldToBrowser' | 'isActive' | 'canRequest'>>;
   private readonly onState?: ConversationHistoryControllerOptions['onState'];
   private readonly onInitialPage?: ConversationHistoryControllerOptions['onInitialPage'];
   private readonly getPreview?: ConversationHistoryControllerOptions['getPreview'];
+  private readonly loadPreview?: ConversationHistoryControllerOptions['loadPreview'];
   private readonly putPreview?: ConversationHistoryControllerOptions['putPreview'];
   private readonly preparationIntervalMs: number;
   private readonly maxPreparationPolls: number;
@@ -221,10 +224,12 @@ export class ConversationHistoryController {
       now: options.now || (() => Date.now()),
       yieldToBrowser: options.yieldToBrowser || yieldToBrowser,
       isActive: options.isActive || (() => true),
+      canRequest: options.canRequest || (() => true),
     };
     this.onState = options.onState;
     this.onInitialPage = options.onInitialPage;
     this.getPreview = options.getPreview;
+    this.loadPreview = options.loadPreview;
     this.putPreview = options.putPreview;
     this.preparationIntervalMs = Math.max(0, options.preparationIntervalMs ?? HISTORY_PREPARATION_INTERVAL_MS);
     this.maxPreparationPolls = Math.max(1, options.maxPreparationPolls ?? HISTORY_MAX_PREPARATION_POLLS);
@@ -287,7 +292,7 @@ export class ConversationHistoryController {
 
   refresh(): void {
     if (!this.started || this.paused || !this.options.isActive() || this.stateValue.error) return;
-    this.enqueue('refresh');
+    this.enqueue(!this.demandRunning && this.stateValue.initialOutcome === 'pending' ? 'initial' : 'refresh');
   }
 
   /** Load an older range while retaining the independently refreshed live head. */
@@ -451,10 +456,28 @@ export class ConversationHistoryController {
       diagnostics: preview?.diagnostics ? { ...preview.diagnostics } : undefined,
       omoPlan: preview?.plan ? clonePlan(preview.plan) : null,
     };
+    if (!preview && identity && this.loadPreview) {
+      const epoch = this.stateValue.epoch;
+      void this.loadPreview(identity).then((saved) => {
+        // Disk may finish after a network response, a route change, or a lock.
+        if (!saved || saved.identity !== identity || !this.started || !this.options.isActive()
+          || this.stateValue.epoch !== epoch || this.stateValue.authoritative || this.rawEntries.length) return;
+        this.previewEntries = cloneEntries(saved.entries);
+        this.rawEntries = this.previewEntries;
+        this.stateValue.entries = cloneEntries(this.rawEntries);
+        this.stateValue.preview = true;
+        this.stateValue.previewHistorical = saved.historical;
+        this.stateValue.sourceRevision = saved.sourceRevision;
+        this.stateValue.mode = saved.mode;
+        this.stateValue.diagnostics = saved.diagnostics;
+        this.stateValue.omoPlan = saved.plan ? clonePlan(saved.plan) : null;
+        this.emit();
+      }).catch(() => { /* Network loading remains available when local storage fails. */ });
+    }
   }
 
   private enqueue(demand: Demand, allowError = false): void {
-    if (this.paused || (this.stateValue.error && !allowError) || !this.options.isActive()) return;
+    if (this.paused || (this.stateValue.error && !allowError) || !this.options.isActive() || !this.options.canRequest()) return;
     if (this.demandRunning) {
       this.queueDemand(demand);
       return;

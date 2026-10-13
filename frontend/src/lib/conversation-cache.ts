@@ -1,4 +1,5 @@
 import { registerConversationCacheClearer } from './conversation-cache-control';
+import { loadSavedConversationPreview, saveConversationPreview } from './conversation-storage';
 import type { ConversationBrowseDiagnostics, ConversationBrowseMode, ConversationEntry, OmoTodoState } from './types';
 
 /** Maximum number of conversation identities retained in the in-memory preview. */
@@ -89,6 +90,15 @@ export function getConversationPreview(identity: string, now = Date.now()): Conv
   return clonePreview(record.preview);
 }
 
+export async function loadConversationPreview(identity: string): Promise<ConversationPreview | null> {
+  const warm = getConversationPreview(identity);
+  if (warm) return warm;
+  const saved = await loadSavedConversationPreview(identity);
+  if (!saved || saved.identity !== identity || !Array.isArray(saved.entries)) return null;
+  try { return boundedPreview(saved); }
+  catch { return null; }
+}
+
 export function putConversationPreview(preview: ConversationPreview, now = Date.now()): boolean {
   if (!preview.identity || !preview.relayId || !Number.isFinite(now)) return false;
   const candidate = boundedPreview({ ...preview, savedAt: now });
@@ -98,6 +108,7 @@ export function putConversationPreview(preview: ConversationPreview, now = Date.
   const previous = cache.get(candidate.identity);
   cache.set(candidate.identity, { preview: candidate, bytes, lastUsed: now });
   evictToLimits(now, previous?.bytes || 0);
+  if (cache.has(candidate.identity)) void saveConversationPreview(candidate, bytes);
   return cache.has(candidate.identity);
 }
 

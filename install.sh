@@ -7,7 +7,7 @@ unset herdr_download_token
 herdr_download_token=${GH_TOKEN:-${GITHUB_TOKEN:-}}
 unset GH_TOKEN GITHUB_TOKEN
 
-REPO=${HERDR_RELEASE_REPOSITORY:-0cv/herdr-mobile-relay}
+REPO=${HERDR_RELEASE_REPOSITORY:-gerayking/herdr-mobile-relay}
 BINARY=herdr-mobile-relay
 
 info() { printf '==> %s\n' "$1" >&2; }

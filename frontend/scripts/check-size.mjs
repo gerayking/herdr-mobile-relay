@@ -75,7 +75,11 @@ import { constants, gzipSync } from 'node:zlib';
 // safe Conversation routing with native-transcript fallback.
 // Raised from 164 KiB for bounded history diagnostics, source-change recovery,
 // and snapshot-aware refresh handling.
-const limitKiB = 165;
+// Raised from 165 KiB for KaTeX styles and local font references. The formula
+// engine remains in the lazy Conversation History chunk.
+// Raised from 170 KiB for bounded startup metadata and persistent cache controls.
+// Raised from 171 KiB for terminal snapshots and exact-target cache restoration.
+const limitKiB = 172;
 const limit = limitKiB * 1024 + 256;
 const root = resolve(process.argv[2] || 'dist');
 const assetNames = await readdir(join(root, 'assets'));

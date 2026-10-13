@@ -274,6 +274,8 @@ export interface QuestionInteraction {
 }
 
 export interface Agent {
+  /** Display-only startup metadata, replaced by the relay's live inventory. */
+  cachedPreview?: boolean;
   relay_id: string;
   relay_label: string;
   raw_pane_id: string;
@@ -590,6 +592,7 @@ export interface NotificationTarget {
 
 export interface TerminalFrame {
   paneId: string;
+  target?: FrontendTargetRef;
   content: string;
   format: string;
   truncated?: boolean;

@@ -483,6 +483,24 @@ func findCodexSession(roots []string, sessionID string) Location {
 			}
 		}
 	}
+	// A running pane can still reference a session archived by another client.
+	// Prefer active rollouts before checking the flat archive in each profile.
+	for _, root := range roots {
+		archiveRoot := filepath.Join(filepath.Dir(root), "archived_sessions")
+		files, err := os.ReadDir(archiveRoot)
+		if err != nil {
+			continue
+		}
+		for _, file := range files {
+			name := strings.ToLower(file.Name())
+			if !strings.HasPrefix(name, "rollout-") || !strings.HasSuffix(name, suffix) {
+				continue
+			}
+			if path := containedRegularFile(filepath.Join(archiveRoot, file.Name()), archiveRoot); path != "" {
+				return Location{Path: path, Root: archiveRoot}
+			}
+		}
+	}
 	return Location{}
 }
 
