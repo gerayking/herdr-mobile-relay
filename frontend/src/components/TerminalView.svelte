@@ -3,6 +3,7 @@
   import AttachmentProgress from '$components/AttachmentProgress.svelte';
   import Button from '$components/ui/Button.svelte';
   import QuestionForm from '$components/QuestionForm.svelte';
+  import { queuedQuestionCount } from '$lib/queued-questions';
   import {
     MAX_PANE_SIZE_COLUMNS,
     MAX_PANE_SIZE_ROWS,
@@ -308,6 +309,41 @@
   const inspectionMode = $derived(agentNeedsInspection(agent));
   const interaction = $derived(questionInteraction(agent));
   const questionMode = $derived(Boolean(!readOnly && responsePending && attentionKind(agent) === 'question' && interaction));
+  const queuedQuestions = $derived(queuedQuestionCount(liveFrame?.content || '', agent.agent || ''));
+  const queueConnected = $derived($connections.get(agent.relay_id)?.status === 'connected' && !agent.cachedPreview);
+  let openingQuestions = $state(false);
+  let queueError = $state('');
+
+  $effect(() => {
+    if (!queuedQuestions || questionMode || !queueConnected) {
+      openingQuestions = false;
+      queueError = '';
+    }
+  });
+
+  $effect(() => {
+    if (!openingQuestions) return;
+    const timeout = setTimeout(() => {
+      openingQuestions = false;
+      queueError = 'Questions have not opened yet. Try again.';
+    }, 10_000);
+    return () => clearTimeout(timeout);
+  });
+
+  async function openQueuedQuestions() {
+    if (!queuedQuestions || openingQuestions || readOnly || keySending || !queueConnected) return;
+    openingQuestions = true;
+    queueError = '';
+    const sent = await sendKeys(['alt+Up'], 'Open pending questions');
+    if (!componentMounted) return;
+    if (!sent) {
+      openingQuestions = false;
+      queueError = 'Could not open questions. Try again.';
+    } else {
+      relayStore.readPane(agent);
+      relayStore.requestAgents();
+    }
+  }
   const resizeSessionActive = $derived(
     Boolean(!readOnly && $connections.get(agent.relay_id)?.capabilities.includes('pane_size_lease')),
   );
@@ -2165,6 +2201,7 @@
 <main
   class:has-actions={inputLocked || nextBlocked}
   class:question-only={questionMode}
+  class:has-queued-questions={queuedQuestions > 0 && !questionMode}
   class:find-open={findOpen}
   class:reader={readOnly}
   class="terminal-view"
@@ -2174,6 +2211,18 @@
     <p class="key-feedback" role="status">Reconnecting...</p>
   {:else if readOnly}
     <p class="key-feedback" role="status">Reader access is read only. Use a controller device to send input or answer prompts.</p>
+  {/if}
+  {#if queuedQuestions && !questionMode}
+    <section class="queued-questions" aria-label="Pending questions" aria-busy={openingQuestions}>
+      <div class="queued-questions-copy">
+        <strong>{queuedQuestions} {queuedQuestions === 1 ? 'question' : 'questions'} waiting</strong>
+        {#if queueError}<span role="status" class="queued-questions-error">{queueError}</span>{/if}
+      </div>
+      <Button
+        disabled={readOnly || keySending || openingQuestions || !queueConnected}
+        onclick={openQueuedQuestions}
+      >{openingQuestions ? 'Opening...' : queueError ? 'Try again' : 'Answer questions'}</Button>
+    </section>
   {/if}
   {#if questionMode && interaction}
     <QuestionForm {agent} {interaction} responding={responding.has(agent.pane_id)} />

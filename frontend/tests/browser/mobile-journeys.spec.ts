@@ -538,6 +538,86 @@ async function handshake(page: Page, index: number, overrides: Record<string, un
 
 const fedora = { id: 'fedora', label: 'Fedora', url: 'wss://fedora.example', token: '' };
 
+test('opens queued Codex questions with one tap and answers them as a form', async ({ page }, testInfo) => {
+  await boot(page, [fedora]);
+  await expect.poll(() => socketCount(page)).toBe(1);
+  await handshake(page, 0);
+  await server(page, 0, { type: 'agents', agents: [{ pane_id: 'w1:p1', status: 'working', project: 'Mobile app', agent: 'codex' }] });
+  await page.getByRole('button', { name: 'Open Mobile app on Fedora' }).click();
+  await page.getByRole('combobox', { name: 'Prompt' }).fill('Keep this draft');
+  await server(page, 0, {
+    type: 'pane_content', pane_id: 'w1:p1', format: 'ansi',
+    content: 'Working on the mobile app\n\nQueued follow-up inputs\n  ? 2 questions\n    alt + ↑ to answer',
+  });
+  const pending = page.getByRole('region', { name: 'Pending questions' });
+  await expect(pending).toContainText('2 questions waiting');
+  for (const width of [320, 1280]) {
+    await page.setViewportSize({ width, height: 800 });
+    await expect(pending.getByRole('button', { name: 'Answer questions' })).toBeVisible();
+    const box = await pending.boundingBox();
+    expect(box!.x + box!.width).toBeLessThanOrEqual(width + 1);
+    const copyBox = await page.getByRole('button', { name: 'Copy', exact: true }).boundingBox();
+    expect(copyBox!.y).toBeGreaterThanOrEqual(box!.y + box!.height);
+    await page.screenshot({ path: testInfo.outputPath(`pending-questions-${width}.png`) });
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect((await commands(page)).filter(c => c.type === 'send_keys')).toHaveLength(0);
+  await pending.getByRole('button', { name: 'Answer questions' }).click();
+  await expect(pending.getByRole('button', { name: 'Opening...' })).toBeDisabled();
+  await expect.poll(async () => (await commands(page)).filter(c => c.type === 'send_keys')).toEqual([
+    expect.objectContaining({ pane_id: 'w1:p1', keys: ['alt+Up'] }),
+  ]);
+  const first = {
+    id: 'queued-q1', kind: 'single_select', question: 'Which devices should be supported?',
+    options: [{ index: 0, label: 'Phone and tablet', description: 'Support both screen sizes' }, { index: 1, label: 'Phone only' }],
+    other: { label: 'Other', placeholder: 'Your answer' }, submit_label: 'Next', question_index: 1, question_total: 2,
+  };
+  await server(page, 0, { type: 'blocked', pane_id: 'w1:p1', attention_kind: 'question', agent: 'codex', project: 'Mobile app', interaction: first, question_layout: true });
+  await expect(pending).toBeHidden();
+  await expect(page.getByText('Question 1 of 2')).toBeVisible();
+  await page.getByRole('radio', { name: /Phone and tablet/ }).check();
+  await page.screenshot({ path: testInfo.outputPath('pending-questions-form.png') });
+  const second = { ...first, id: 'queued-q2', question: 'Any other preferences?', options: [], question_index: 2, can_go_back: true, submit_label: 'Submit' };
+  await page.evaluate(value => (window as any).__relayNextInteraction(value), second);
+  await page.getByRole('button', { name: 'Next', exact: true }).click();
+  await expect(page.getByText('Question 2 of 2')).toBeVisible();
+  await page.getByRole('textbox', { name: 'Your answer' }).fill('Large touch targets');
+  await page.getByRole('button', { name: 'Submit', exact: true }).click();
+  await expect(page.getByText('Answers submitted.')).toBeVisible();
+  await server(page, 0, { type: 'pane_content', pane_id: 'w1:p1', format: 'ansi', content: 'Continuing work' });
+  await expect(pending).toBeHidden();
+  await expect(page.getByRole('combobox', { name: 'Prompt' })).toHaveValue('Keep this draft');
+  expect((await commands(page)).filter(c => c.type === 'answer_question')).toEqual([
+    expect.objectContaining({ selected_indices: [0] }),
+    expect.objectContaining({ other_selected: true, other_text: 'Large touch targets' }),
+  ]);
+});
+
+test('queued question entry supports retry and becomes unavailable offline', async ({ page }) => {
+  await boot(page, [fedora]);
+  await expect.poll(() => socketCount(page)).toBe(1);
+  await handshake(page, 0);
+  await server(page, 0, { type: 'agents', agents: [{ pane_id: 'w1:p1', status: 'working', project: 'Queue retry', agent: 'codex' }] });
+  await page.getByRole('button', { name: 'Open Queue retry on Fedora' }).click();
+  await server(page, 0, { type: 'pane_content', pane_id: 'w1:p1', format: 'ansi', content: 'Queued follow-up inputs\n  ? 2 questions\n    alt + ↑ to answer' });
+  await setAutoCommands(page, false);
+  const pending = page.getByRole('region', { name: 'Pending questions' });
+  await pending.getByRole('button', { name: 'Answer questions' }).click();
+  await expect.poll(async () => (await commands(page)).some(c => c.type === 'send_keys')).toBe(true);
+  const command = (await commands(page)).find(c => c.type === 'send_keys')!;
+  await server(page, 0, { type: 'command_result', action: 'send_keys', request_id: command.request_id, ok: false, error: 'Agent unavailable' });
+  await expect(pending.getByRole('button', { name: 'Try again' })).toBeEnabled();
+  await setAutoCommands(page, true);
+  await page.clock.install();
+  await pending.getByRole('button', { name: 'Try again' }).click();
+  await expect(pending.getByRole('button', { name: 'Opening...' })).toBeDisabled();
+  await page.clock.fastForward(10_001);
+  await expect(pending).toContainText('Questions have not opened yet');
+  await expect(pending.getByRole('button', { name: 'Try again' })).toBeEnabled();
+  await page.evaluate(() => (window as any).__relayClose(0));
+  await expect(pending.getByRole('button')).toBeDisabled();
+});
+
 test('groups agents by relay and remembers independent folds across navigation and reload', async ({ page }) => {
   const other = { id: 'mac', label: 'Mac Studio', url: 'wss://mac.example', token: '' };
   await boot(page, [fedora, other]);

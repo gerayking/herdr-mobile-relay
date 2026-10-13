@@ -506,6 +506,7 @@ textarea { min-height: 6.5rem; resize: vertical; }
 .terminal-view.question-only { overflow: hidden; }
 .terminal-view.question-only .question-form { border-top: 0; flex: 1 1 auto; max-height: none; }
 .term { display: contents; }
+.terminal-view.has-queued-questions > .term:not(.hidden) { display: flex; }
 .term.hidden {
   display: flex;
   inset: 0;
@@ -774,6 +775,11 @@ textarea { min-height: 6.5rem; resize: vertical; }
 .secret-prompt-row { display: flex; gap: .4rem; }
 .secret-prompt-row input { background: var(--background); border: 1px solid var(--border); border-radius: .55rem; color: var(--foreground); flex: 1; font-size: .84rem; min-width: 0; padding: .45rem .6rem; }
 
+.queued-questions { display: flex; align-items: center; flex: 0 0 auto; flex-wrap: wrap; gap: .6rem; padding: .65rem .75rem; border-bottom: 1px solid var(--border); background: var(--card); }
+.queued-questions-copy { flex: 1 1 8rem; min-width: 0; display: grid; gap: .25rem; overflow-wrap: anywhere; }
+.queued-questions-copy strong { font-size: .85rem; }
+.queued-questions .button { min-height: 44px; }
+.queued-questions-error { color: var(--muted); font-size: .75rem; }
 .question-form { border-top: 1px solid var(--border); max-height: min(70dvh, 44rem); overflow-y: auto; padding: .75rem; }
 .question-progress { color: var(--muted); font-size: .68rem; font-weight: 700; letter-spacing: .04em; margin: 0 0 .3rem; text-transform: uppercase; }
 .question-form fieldset { border: 0; margin: 0; padding: 0; }
