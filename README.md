@@ -1,8 +1,8 @@
 # Herdr Mobile Relay
 
-> Geray's custom distribution: **0.22.6003**, based on upstream 0.22.6.
+> Geray's custom distribution: **0.22.6004**, based on upstream 0.22.6.
 > Install the pinned custom release with
-> `herdr plugin install gerayking/herdr-mobile-relay --ref v0.22.6003 --yes`.
+> `herdr plugin install gerayking/herdr-mobile-relay --ref v0.22.6004 --yes`.
 > See [Custom distribution](docs/custom-distribution.md) for multi-machine setup,
 > local changes, and release verification. Documentation below describes the upstream project.
 

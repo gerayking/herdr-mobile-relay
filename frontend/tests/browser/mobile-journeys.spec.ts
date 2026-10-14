@@ -545,9 +545,10 @@ test('opens queued Codex questions with one tap and answers them as a form', asy
   await server(page, 0, { type: 'agents', agents: [{ pane_id: 'w1:p1', status: 'working', project: 'Mobile app', agent: 'codex' }] });
   await page.getByRole('button', { name: 'Open Mobile app on Fedora' }).click();
   await page.getByRole('combobox', { name: 'Prompt' }).fill('Keep this draft');
+  await server(page, 0, { type: 'blocked', pane_id: 'w1:p1', attention_kind: 'unknown', project: 'Mobile app', agent: 'codex' });
   await server(page, 0, {
     type: 'pane_content', pane_id: 'w1:p1', format: 'ansi',
-    content: 'Working on the mobile app\n\nQueued follow-up inputs\n  ? 2 questions\n    alt + ↑ to answer',
+    content: readFileSync(new URL('../fixtures/codex-queued-questions.txt', import.meta.url), 'utf8'),
   });
   const pending = page.getByRole('region', { name: 'Pending questions' });
   await expect(pending).toContainText('2 questions waiting');

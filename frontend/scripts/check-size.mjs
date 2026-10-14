@@ -80,7 +80,8 @@ import { constants, gzipSync } from 'node:zlib';
 // Raised from 170 KiB for bounded startup metadata and persistent cache controls.
 // Raised from 171 KiB for terminal snapshots and exact-target cache restoration.
 // Raised from 172 KiB for relay grouping, status summaries, and saved folds.
-const limitKiB = 173;
+// Raised from 173 KiB for queued-question controls and native Codex chrome recognition.
+const limitKiB = 174;
 const limit = limitKiB * 1024 + 256;
 const root = resolve(process.argv[2] || 'dist');
 const assetNames = await readdir(join(root, 'assets'));
